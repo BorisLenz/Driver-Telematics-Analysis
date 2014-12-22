@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.1  #First Draftddddd 
+#Ver 0.1  #First Submission 
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -26,14 +26,17 @@ vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
 #Transform data to distributions
 speedDistribution <- function(trip){
   speed <- 3.6 * sqrt(diff(trip$x, 20, 1)^2 + diff(trip$y, 20, 1)^2) / 20
-  return(quantile(speed, seq(0.05, 1, by=0.05)))
+  return(list(quantile(speed, seq(0.05, 1, by=0.05)), speed))
 }
 
 #Define function to be passed as parallel
 transform2Percentiles <- function(file, driverID){
   trip <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
-  speedDist <- speedDistribution(trip)  
-  return(speedDist)
+  speedData <- speedDistribution(trip)
+  speedDist <- speedData[[1]]
+  acelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
+  #tripDistance <- dist(trip)
+  return(c(speedDist, acelerationDist))
 }
 
 #List all possible drivers identities
@@ -62,7 +65,7 @@ driversProcessed <- sapply(drivers, function(driver){
   h2oResult <- as.h2o(h2oServer, as.data.frame(results))
   print(h2o.ls(h2oServer))
   driverDeepNNModel <- h2o.deeplearning(x = seq(1, ncol(h2oResult)), y = 1, 
-                                        data = h2oResult, autoencoder = TRUE, hidden = c(10, 10), epochs = 30)
+                                        data = h2oResult, autoencoder = TRUE, hidden = c(100, 25, 100), epochs = 30)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
