@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.1  #First Submission 
+#Ver 0.2  #Added extra features
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -7,12 +7,8 @@ rm(list=ls(all=TRUE))
 #Libraries, Options and extra functions----------------------
 require("data.table")
 require("parallel")
-require("DMwR")
 require("h2o")
-require("ggplot2")
 require("caret")
-require("Metrics")
-require("kernlab")
 
 #Set Working Directory------------------------------
 workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
@@ -35,8 +31,10 @@ transform2Percentiles <- function(file, driverID){
   speedData <- speedDistribution(trip)
   speedDist <- speedData[[1]]
   acelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
-  #tripDistance <- dist(trip)
-  return(c(speedDist, acelerationDist))
+  distanceTrip <- log(sum(sqrt((abs(diff(trip$x))^2) + (abs(diff(trip$y))^2))))
+  
+  return(c(speedDist, acelerationDist, distanceTrip))
+  
 }
 
 #List all possible drivers identities
@@ -62,10 +60,10 @@ driversProcessed <- sapply(drivers, function(driver){
   #biplot(prcomp(results), cex=.8) 
   
   #R matrix conversion to h2o object and stored in the server
-  h2oResult <- as.h2o(h2oServer, as.data.frame(results))
+  h2oResult <- as.h2o(h2oServer, as.data.frame(cbind(rep(c(0, 1), 100), results)))
   print(h2o.ls(h2oServer))
-  driverDeepNNModel <- h2o.deeplearning(x = seq(1, ncol(h2oResult)), y = 1, 
-                                        data = h2oResult, autoencoder = TRUE, hidden = c(100, 25, 100), epochs = 30)
+  driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1, 
+                                        data = h2oResult, autoencoder = TRUE, hidden = c(20, 15, 20), epochs = 75)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
