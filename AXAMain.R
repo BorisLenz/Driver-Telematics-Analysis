@@ -62,7 +62,7 @@ driversProcessed <- sapply(drivers, function(driver){
   h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), results))
   print(h2o.ls(h2oServer))
   driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1, 
-                                        data = h2oResult, autoencoder = TRUE, hidden = c(15, 15), epochs = 200)
+                                        data = h2oResult, autoencoder = TRUE, hidden = c(15, 15), epochs = 250)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
