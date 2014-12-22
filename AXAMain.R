@@ -30,11 +30,10 @@ transform2Percentiles <- function(file, driverID){
   trip <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
   speedData <- speedDistribution(trip)
   speedDist <- speedData[[1]]
-  acelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
-  distanceTrip <- log(sum(sqrt((abs(diff(trip$x))^2) + (abs(diff(trip$y))^2))))
+  accelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
+  distanceTrip <- log(sum(sqrt((diff(trip$x)^2) + (diff(trip$y)^2))))
   
-  return(c(speedDist, acelerationDist, distanceTrip))
-  
+  return(c(speedDist, accelerationDist, distanceTrip))
 }
 
 #List all possible drivers identities
@@ -60,10 +59,11 @@ driversProcessed <- sapply(drivers, function(driver){
   #biplot(prcomp(results), cex=.8) 
   
   #R matrix conversion to h2o object and stored in the server
-  h2oResult <- as.h2o(h2oServer, as.data.frame(cbind(rep(c(0, 1), 100), results)))
+  results <- as.data.frame(cbind(rep(c(0, 1, 1, 0), 50), results))
+  h2oResult <- as.h2o(h2oServer, results)
   print(h2o.ls(h2oServer))
   driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1, 
-                                        data = h2oResult, autoencoder = TRUE, hidden = c(20, 15, 20), epochs = 75)
+                                        data = h2oResult, autoencoder = TRUE, hidden = c(20, 20), epochs = 80)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
