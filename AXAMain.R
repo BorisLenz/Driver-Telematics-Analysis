@@ -81,5 +81,4 @@ submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
 submissionTemplate$prob <- signif(driversProcessed, digits = 4)
-write.csv(submissionTemplate, file = "SpeedNNMSEPrediction.csv", row.names = FALSE)
-system('zip SpeedNNMSEPrediction.zip SpeedNNMSEPrediction.csv')
+write.csv(submissionTemplate, file = gzfile("SpeedNNMSEPrediction.csv.gz"), row.names = FALSE)
