@@ -125,6 +125,7 @@ h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
 #Load pretrained model
 checkpointModel <- h2o.loadModel(h2oServer, deepNetPath)
 print(h2o.ls(h2oServer))
+checkpointModelKey <- h2o.ls(h2oServer)[, 1]
 
 driversProb <- sapply(drivers, function(driver){
   #Parallel processing of each driver data
@@ -158,7 +159,8 @@ driversProb <- sapply(drivers, function(driver){
   anomalousTrips[, 1] <- pchisq(anomalousTrips[, 1], df = 1)  
   
   print(h2o.ls(h2oServer))
-  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
+  h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
+  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1])  
   print(paste0("Driver number ", driver, " processed"))
   return(anomalousTrips[, 1])
 })
