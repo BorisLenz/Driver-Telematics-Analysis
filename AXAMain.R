@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.2  #Added extra features
+#Ver 0.3  #Added: PCA, cross validation and pre-training
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -8,7 +8,7 @@ rm(list=ls(all=TRUE))
 require("data.table")
 require("parallel")
 require("h2o")
-require("caret")
+require("ggplot2")
 
 #Set Working Directory------------------------------
 workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
@@ -41,25 +41,56 @@ transform2Percentiles <- function(file, driverID){
   return(c(speedDist, accelerationDist, distanceTrip))
 }
 
-#Unsupervised Learning--------------
-#Neural Network pre-training
-#Init h2o Server
-#If there is need to start h2o from command line:
-#system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
-#Start h2o directly from R
-h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1) 
-
-#Begin with a randomly selected driver to start the unsupervised learning
-numberOfDrivers <- 2
+#EDA----------------------------------------
+##Determine the minimal PCAs / number of neurons in the middle layer
+#Begin with a randomly selected driver to start the PCA calculation
+numberOfDrivers <- 200
 initialDrivers <- sample(drivers, numberOfDrivers)
 driversProcessed <- sapply(initialDrivers, function(driver){
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   print(paste0("Driver number: ", driver, " processed"))
   return(results)
 })
-driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers*200, byrow = TRUE))
+driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE))
+
+#Init h2o Server
+#If there is need to start h2o from command line:
+#system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
+#Start h2o directly from R
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1) 
 
 h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), driversProcessed)) 
+print(h2o.ls(h2oServer))
+rm(driversProcessed)
+
+#PCA
+PCAModel <- h2o.prcomp(h2oResult)
+plot(PCAModel@model$sdev)
+#ggplot(data.frame(X = PCAModel@model$sdev), aes(x = X)) + geom_density()
+
+h2o.shutdown(h2oServer, prompt = FALSE)  
+
+#Unsupervised Learning and Hyperparameter Tuning--------------
+#Neural Network pre-training
+#Begin with a randomly selected driver to start the unsupervised learning
+numberOfDrivers <- 20
+initialDrivers <- sample(drivers, numberOfDrivers)
+driversProcessed <- sapply(initialDrivers, function(driver){
+  results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
+  print(paste0("Driver number: ", driver, " processed"))
+  return(results)
+})
+driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE))
+
+#Init h2o Server
+#If there is need to start h2o from command line:
+#system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
+#Start h2o directly from R
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1) 
+
+h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), driversProcessed)) 
+print(h2o.ls(h2oServer))
+rm(driversProcessed)
 activations <- c("RectifierWithDropout", "TanhWithDropout", "Rectifier", "Tanh")
 
 cvNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1,
@@ -71,7 +102,7 @@ cvNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1,
                               l2 = c(0, 1e-5),
                               rho = c(0.95, 0.99),
                               epsilon = c(1e-12, 1e-10, 1e-08),
-                              hidden = c(50, 25, 50), epochs = 250)
+                              hidden = c(50, 25, 50), epochs = 50)
 
 checkpointModel <- cvNNModel@model[[1]] #Best NN cv model 
 deepNetPath <- h2o.saveModel(object = checkpointModel, dir = file.path(workingDirectory), force = TRUE)
@@ -95,7 +126,7 @@ h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
 checkpointModel <- h2o.loadModel(h2oServer, deepNetPath)
 print(h2o.ls(h2oServer))
 
-driversProcessed <- sapply(drivers, function(driver){
+driversProb <- sapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   results <- scale(matrix(results, nrow = 200, byrow = TRUE))
@@ -119,8 +150,13 @@ driversProcessed <- sapply(drivers, function(driver){
                                         l2 = optimall2,
                                         rho = optimalRho,
                                         epsilon = optimalEpsilon,
-                                        hidden = c(50, 25, 50), epochs = 750)
+                                        hidden = c(50, 25, 50), epochs = 500)
+  
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
+  
+  #MSE error transformation into pseudo-probabilities / chi-squared probability calculation
+  anomalousTrips[, 1] <- pchisq(anomalousTrips[, 1], df = 1)  
+  
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
   print(paste0("Driver number ", driver, " processed"))
@@ -129,15 +165,15 @@ driversProcessed <- sapply(drivers, function(driver){
 
 h2o.shutdown(h2oServer, prompt = FALSE)  
 
-#MSE error transformation into pseudo-probabilities-------------------
+#MSE error transformation into positive pseudo-probabilities-------------------
 #chi-squared probability calculation
-driversProcessed <- pchisq(driversProcessed, df = 1)
-driversProcessed <- 1 - as.vector(driversProcessed)
+#driversProb <- pchisq(driversProb, df = 1)
+driversProb <- 1 - as.vector(driversProb)
 
 #Write .csv------------------------- 
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE, 
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
-submissionTemplate$prob <- signif(driversProcessed, digits = 4)
+submissionTemplate$prob <- signif(driversProb, digits = 4)
 write.csv(submissionTemplate, file = "SpeedNNMSEPredictionIV.csv", row.names = FALSE)
 system('zip SpeedNNMSEPredictionIV.zip SpeedNNMSEPredictionIV.csv')
