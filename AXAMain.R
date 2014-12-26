@@ -18,7 +18,12 @@ otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/D
 
 vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
 
-#Modelling------------------------
+#List all possible drivers identities
+drivers <- list.files(driversDirectory)
+#Detect available cores
+numCores <- detectCores() 
+
+#Data Mining (Functions)------------------------
 #Transform data to distributions
 speedDistribution <- function(trip){
   speed <- 3.6 * sqrt(diff(trip$x, 20, 1)^2 + diff(trip$y, 20, 1)^2) / 20
@@ -31,25 +36,69 @@ transform2Percentiles <- function(file, driverID){
   speedData <- speedDistribution(trip)
   speedDist <- speedData[[1]]
   accelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
-  distanceTrip <- log(sum(sqrt((diff(trip$x)^2) + (diff(trip$y)^2))))
+  distanceTrip <- sum(sqrt((diff(trip$x)^2) + (diff(trip$y)^2)))
   
   return(c(speedDist, accelerationDist, distanceTrip))
 }
 
-#List all possible drivers identities
-drivers <- list.files(driversDirectory)
-numCores <- detectCores() 
-
+#Unsupervised Learning--------------
+#Neural Network pre-training
 #Init h2o Server
 #If there is need to start h2o from command line:
 #system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
 #Start h2o directly from R
 h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1) 
 
+#Begin with a randomly selected driver to start the unsupervised learning
+numberOfDrivers <- 2
+initialDrivers <- sample(drivers, numberOfDrivers)
+driversProcessed <- sapply(initialDrivers, function(driver){
+  results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
+  print(paste0("Driver number: ", driver, " processed"))
+  return(results)
+})
+driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers*200, byrow = TRUE))
+
+h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), driversProcessed)) 
+activations <- c("RectifierWithDropout", "TanhWithDropout", "Rectifier", "Tanh")
+
+cvNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1,
+                              data = h2oResult,
+                              autoencoder = TRUE, fast_mode = TRUE,
+                              activation = activations,                  
+                              input_dropout_ratio = c(0, 0.1),
+                              l1 = c(0, 1e-5),
+                              l2 = c(0, 1e-5),
+                              rho = c(0.95, 0.99),
+                              epsilon = c(1e-12, 1e-10, 1e-08),
+                              hidden = c(50, 25, 50), epochs = 250)
+
+checkpointModel <- cvNNModel@model[[1]] #Best NN cv model 
+deepNetPath <- h2o.saveModel(object = checkpointModel, dir = file.path(workingDirectory), force = TRUE)
+optimalActivation <- cvNNModel@model[[1]]@model$params$activation
+optimalIDR <- cvNNModel@model[[1]]@model$params$input_dropout_ratio
+optimall1 <- cvNNModel@model[[1]]@model$params$l1
+optimall2 <- cvNNModel@model[[1]]@model$params$l2
+optimalRho <- cvNNModel@model[[1]]@model$params$rho
+optimalEpsilon <- cvNNModel@model[[1]]@model$params$epsilon
+
+h2o.shutdown(h2oServer, prompt = FALSE)  
+
+#Modelling---------------------------
+#Init h2o Server
+#If there is need to start h2o from command line:
+#system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
+#Start h2o directly from R
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1) 
+
+#Load pretrained model
+checkpointModel <- h2o.loadModel(h2oServer, deepNetPath)
+print(h2o.ls(h2oServer))
+
 driversProcessed <- sapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  results <- matrix(results, nrow = 200, byrow = TRUE)
+  results <- scale(matrix(results, nrow = 200, byrow = TRUE))
   #KSVMmodel <- ksvm(results, type = "one-svc", kernel="rbfdot", kpar="automatic", prob.model = TRUE)
   #KSVMPrediction <- predict(KSVMmodel, results, type = "response")
     
@@ -61,9 +110,16 @@ driversProcessed <- sapply(drivers, function(driver){
   #R matrix conversion to h2o object and stored in the server
   h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), results))
   print(h2o.ls(h2oServer))
-  driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1, activation = "Tanh",
+  driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1, 
+                                        activation = optimalActivation,
                                         data = h2oResult, autoencoder = TRUE,
-                                        hidden = c(11, 11), epochs = 750)
+                                        checkpoint = checkpointModel,
+                                        input_dropout_ratio = optimalIDR,
+                                        l1 = optimall1,
+                                        l2 = optimall2,
+                                        rho = optimalRho,
+                                        epsilon = optimalEpsilon,
+                                        hidden = c(50, 25, 50), epochs = 750)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   print(h2o.ls(h2oServer))
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
@@ -73,7 +129,9 @@ driversProcessed <- sapply(drivers, function(driver){
 
 h2o.shutdown(h2oServer, prompt = FALSE)  
 
-#Predictions on the MSE scale turned into pseudo-probabilities
+#MSE error transformation into pseudo-probabilities-------------------
+#chi-squared probability calculation
+driversProcessed <- pchisq(driversProcessed, df = 1)
 driversProcessed <- 1 - as.vector(driversProcessed)
 
 #Write .csv------------------------- 
@@ -81,5 +139,5 @@ submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
 submissionTemplate$prob <- signif(driversProcessed, digits = 4)
-write.csv(submissionTemplate, file = "SpeedNNMSEPredictionIII.csv", row.names = FALSE)
-system('zip SpeedNNMSEPredictionIII.zip SpeedNNMSEPredictionIII.csv')
+write.csv(submissionTemplate, file = "SpeedNNMSEPredictionIV.csv", row.names = FALSE)
+system('zip SpeedNNMSEPredictionIV.zip SpeedNNMSEPredictionIV.csv')
