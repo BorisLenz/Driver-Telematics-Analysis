@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.3  #Added: PCA, cross validation and pre-training
+#Ver 0.3  #Added: Turns, PCA, cross validation and pre-training
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -37,8 +37,10 @@ transform2Percentiles <- function(file, driverID){
   speedDist <- speedData[[1]]
   accelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
   distanceTrip <- sum(sqrt((diff(trip$x)^2) + (diff(trip$y)^2)))
+  turningAngles <- diff(atan2(diff(trip$y), diff(trip$x)) * (180/pi))
+  turningAngles <- quantile(turningAngles, seq(0.05, 1, by=0.05))
   
-  return(c(speedDist, accelerationDist, distanceTrip))
+  return(c(speedDist, accelerationDist, distanceTrip, turningAngles))
 }
 
 #EDA----------------------------------------
@@ -156,7 +158,7 @@ driversProb <- sapply(drivers, function(driver){
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   
   #MSE error transformation into pseudo-probabilities / chi-squared probability calculation
-  anomalousTrips[, 1] <- pchisq(anomalousTrips[, 1], df = 1)  
+  #anomalousTrips[, 1] <- pchisq(anomalousTrips[, 1], df = 1)  
   
   print(h2o.ls(h2oServer))
   h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
@@ -169,7 +171,7 @@ h2o.shutdown(h2oServer, prompt = FALSE)
 
 #MSE error transformation into positive pseudo-probabilities-------------------
 #chi-squared probability calculation
-#driversProb <- pchisq(driversProb, df = 1)
+driversProb <- pchisq(driversProb, df = 1)
 driversProb <- 1 - as.vector(driversProb)
 
 #Write .csv------------------------- 
