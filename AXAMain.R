@@ -176,6 +176,6 @@ driversProb <- 1 - as.vector(driversProb)
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE, 
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
-submissionTemplate$prob <- signif(driversProb, digits = 4)
-write.csv(submissionTemplate, file = "SpeedNNMSEPredictionIV.csv", row.names = FALSE)
-system('zip SpeedNNMSEPredictionIV.zip SpeedNNMSEPredictionIV.csv')
+submissionTemplate$prob <- signif(driversProb, digits = 5)
+write.csv(submissionTemplate, file = "SpeedNNMSEPredictionV.csv", row.names = FALSE)
+system('zip SpeedNNMSEPredictionV.zip SpeedNNMSEPredictionV.csv')
