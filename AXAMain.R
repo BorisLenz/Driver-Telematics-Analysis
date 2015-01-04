@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.3  #Added: Turns, PCA, cross validation and pre-training
+#Ver 0.4  #Added: Angles revisited and outlier detection
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -33,7 +33,7 @@ speedDistribution <- function(trip, sigma = 5){
 }
 
 #Angles Mining with Angle Rotation
-angleVector <- function(dir, sigma = 5){  
+angleVector <- function(dir, sigma = 4){  
   dir <- as.data.table(cbind(diff(dir$x), diff(dir$y)))
   setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
   #Returns the angles between vectors
@@ -122,11 +122,17 @@ tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, 
 ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
 print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
 
-angles2Plot <-  3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
-ggplot(as.data.frame(angles2Plot), aes(x = angles2Plot)) + geom_density()
-#Remove data above 5 sigmas (5 standard deviations)
-angles2Plot2 <- angles2Plot[!angles2Plot > sd(angles2Plot) * 5]
-ggplot(as.data.frame(angles2Plot2), aes(x = angles2Plot2)) + geom_density()
+dir <- as.data.table(cbind(diff(tripCoordinates$x), diff(tripCoordinates$y)))
+setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
+dir2 <- dir[2:nrow(dir)]
+dir1 <- dir[1:(nrow(dir) - 1)]
+angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
+ggplot(as.data.frame(angles), aes(x = angles)) + geom_density()
+#Remove data above 4 sigmas (4 standard deviations)
+#NAs & Outliers removal
+angles <- na.omit(angles)
+anglesWoOutliers <- angles[!angles > sd(angles) * 4]  
+ggplot(as.data.frame(anglesWoOutliers), aes(x = anglesWoOutliers)) + geom_density()
 
 #Unsupervised Learning and Hyperparameter Tuning--------------
 #Neural Network pre-training
