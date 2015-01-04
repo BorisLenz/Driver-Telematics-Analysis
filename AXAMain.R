@@ -4,13 +4,13 @@
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
 
-#Libraries, Options and extra functions----------------------
+#Libraries, directories, options and extra functions----------------------
 require("data.table")
 require("parallel")
 require("h2o")
 require("ggplot2")
 
-#Set Working Directory------------------------------
+#Set Working Directory
 workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
 setwd(workingDirectory)
 driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/drivers"
@@ -24,12 +24,28 @@ drivers <- list.files(driversDirectory)
 numCores <- detectCores() 
 
 #Data Mining (Functions)------------------------
-#Transform data to distributions
+#Transform data to speed distributions
 speedDistribution <- function(trip, sigma = 5){
   speed <-  3.6 * sqrt(diff(trip$x)^2 + diff(trip$y)^2) 
-  #Six sigma removal
+  #n-sigma removal
   speedWoOutliers <- speed[!speed > sd(speed) * sigma]  
   return(list(quantile(speedWoOutliers, seq(0.05, 1, by=0.05)), speed))
+}
+
+#Angles Mining with Angle Rotation
+angleVector <- function(dir, sigma = 5){  
+  dir <- as.data.table(cbind(diff(dir$x), diff(dir$y)))
+  setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
+  #Returns the angles between vectors
+  #dir is a 2D-array of shape (N,M) representing N vectors in M-dimensional space.
+  #It returns a vector which is a 1D-array of values of shape (N-1,), with each value between 0 and pi.  
+  dir2 <- dir[2:nrow(dir)]
+  dir1 <- dir[1:(nrow(dir) - 1)]
+  angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
+  #NAs & Outliers removal
+  angles <- na.omit(angles)
+  anglesWoOutliers <- angles[!angles > sd(angles) * sigma]    
+  return(quantile(anglesWoOutliers, seq(0.05, 1, by=0.05)))
 }
 
 #Define function to be passed as parallel
@@ -39,8 +55,7 @@ transform2Percentiles <- function(file, driverID){
   speedDist <- speedData[[1]]
   accelerationDist <- quantile(diff(speedData[[2]]), seq(0.05, 1, by=0.05))
   distanceTrip <- sum(sqrt((diff(trip$x)^2) + (diff(trip$y)^2)))
-  turningAngles <- diff(atan2(diff(trip$y), diff(trip$x)) * (180/pi))
-  turningAngles <- quantile(turningAngles, seq(0.05, 1, by=0.05))
+  turningAngles <- angleVector(trip)
   
   return(c(speedDist, accelerationDist, distanceTrip, turningAngles))
 }
@@ -90,6 +105,7 @@ driverViz <- sample(drivers, 1)
 fileViz <- sample(1:200, 1)
 
 tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
 print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
 
 speed2Plot <-  3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
@@ -97,6 +113,20 @@ ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
 #Remove data above 5 sigmas (5 standard deviations)
 speed2Plot2 <- speed2Plot[!speed2Plot > sd(speed2Plot) * 5]
 ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
+
+##EDA Pt. 4 Visualization of Turning Angles with and without outlier replacement
+driverViz <- sample(drivers, 1)
+fileViz <- sample(1:200, 1)
+
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
+print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
+
+angles2Plot <-  3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
+ggplot(as.data.frame(angles2Plot), aes(x = angles2Plot)) + geom_density()
+#Remove data above 5 sigmas (5 standard deviations)
+angles2Plot2 <- angles2Plot[!angles2Plot > sd(angles2Plot) * 5]
+ggplot(as.data.frame(angles2Plot2), aes(x = angles2Plot2)) + geom_density()
 
 #Unsupervised Learning and Hyperparameter Tuning--------------
 #Neural Network pre-training
