@@ -116,7 +116,7 @@ print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed
 speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
 ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
 #Remove data above 5 sigmas (5 standard deviations)
-speed2Plot2 <- speed2Plot[!speed2Plot > sd(speed2Plot) * 5]
+speed2Plot2 <- speed2Plot[!speed2Plot > mean(speed2Plot) + sd(speed2Plot) * 5]
 ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
 
 ##EDA Pt. 4 Visualization of Turning Angles with and without outlier replacement
@@ -137,7 +137,7 @@ anglesWoOutliers <- na.omit(angles)
 #Remove orthogonal values
 anglesWoOutliers[anglesWoOutliers >= 90] <- 0
 #Outliers Removal
-anglesWoOutliers <- anglesWoOutliers[!anglesWoOutliers > sd(anglesWoOutliers) * 4]
+anglesWoOutliers <- anglesWoOutliers[!anglesWoOutliers > mean(anglesWoOutliers) + sd(anglesWoOutliers) * 4]
 ggplot(as.data.frame(anglesWoOutliers), aes(x = anglesWoOutliers)) + geom_density()
 
 #Unsupervised Learning and Hyperparameter Tuning--------------
