@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.5 #Added: Angles second revision and outlier detection
+#Ver 0.6 #Added: Angles second revision and outlier detection second revision
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -26,7 +26,7 @@ numCores <- detectCores()
 speedDistribution <- function(trip, sigma = 4){
   speed <- 3.6 * sqrt(diff(trip$x)^2 + diff(trip$y)^2)
   #n-sigma removal
-  speedWoOutliers <- speed[!speed > sd(speed) * sigma]
+  speedWoOutliers <- speed[!speed > mean(speed) + sd(speed) * sigma]
   return(list(quantile(speedWoOutliers, seq(0.05, 1, by=0.05)), speedWoOutliers))
 }
 #Angles Mining with Angle Rotation
@@ -44,7 +44,7 @@ angleVector <- function(dir, sigma = 4){
   #set orthogonal values to zero
   angles[angles >= 90] <- 0  
   #Outliers removal
-  anglesWoOutliers <- angles[!angles > sd(angles) * sigma]
+  anglesWoOutliers <- angles[!angles > mean(angles) + sd(angles) * sigma]
   return(list(quantile(anglesWoOutliers, seq(0.05, 1, by=0.05)), angles))
 }
 #Define function to be passed as parallel
@@ -54,24 +54,26 @@ transform2Percentiles <- function(file, driverID){
   speedDist <- speedData[[1]]
   accelerations <- diff(speedData[[2]])
   #Acceleration outlier removal
-  accelerationsWoOutliers <- accelerations[!accelerations > sd(accelerations) * 5]  
+  accelerationsWoOutliers <- accelerations[!accelerations > mean(accelerations) + sd(accelerations) * 5]  
   accelerationDist <- quantile(accelerationsWoOutliers, seq(0.05, 1, by=0.05))
   distances <- sqrt((diff(trip$x)^2) + (diff(trip$y)^2))
-  distances[distances > sd(distances) * 5] <- NA
+  distances[distances > mean(distances) + sd(distances) * 5] <- NA
   distances[is.na(distances)] <- mean(distances, na.rm = TRUE)
   distanceTrip <- sum(distances)
   anglesData <- angleVector(trip)
   turningAnglesDist <- anglesData[[1]]
-  anglesPlusSpeedist <- anglesData[[2]] * speedData[[2]][-1]
-  anglesPlusSpeedist <- anglesPlusSpeedist[!anglesPlusSpeedist > sd(anglesPlusSpeedist) * 5]
-  anglesPlusSpeedist <- quantile(anglesPlusSpeedist, seq(0.05, 1, by=0.05))
-  return(c(speedDist, accelerationDist, distanceTrip, turningAnglesDist, anglesPlusSpeedist))
+  #anglesPlusSpeedist <- anglesData[[2]] * speedData[[2]][-1] #this doesn't work on the 1004th driver trip number 11
+  #anglesPlusSpeedist <- anglesPlusSpeedist[!anglesPlusSpeedist > sd(anglesPlusSpeedist) * 5]
+  #anglesPlusSpeedist <- quantile(anglesPlusSpeedist, seq(0.05, 1, by=0.05))
+  
+  return(c(speedDist, accelerationDist, distanceTrip, turningAnglesDist))
+  #return(c(speedDist, accelerationDist, distanceTrip, turningAnglesDist, anglesPlusSpeedist))
 }
 
 #EDA----------------------------------------
 ## EDA Pt. 1 Determine the minimal PCAs / number of neurons in the middle layer
 #Begin with a randomly selected driver to start the PCA calculation
-numberOfDrivers <- 300
+numberOfDrivers <- 100
 initialDrivers <- sample(drivers, numberOfDrivers)
 driversProcessed <- sapply(initialDrivers, function(driver){
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
@@ -141,7 +143,7 @@ ggplot(as.data.frame(anglesWoOutliers), aes(x = anglesWoOutliers)) + geom_densit
 #Unsupervised Learning and Hyperparameter Tuning--------------
 #Neural Network pre-training
 #Begin with a randomly selected driver to start the unsupervised learning
-numberOfDrivers <- 75
+numberOfDrivers <- 25
 initialDrivers <- sample(drivers, numberOfDrivers)
 driversProcessed <- sapply(initialDrivers, function(driver){
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
@@ -155,7 +157,7 @@ driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDriver
 #system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
 #Start h2o directly from R
 h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
-h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50), driversProcessed))
+h2oResult <- as.h2o(h2oServer, cbind(rep(c(0, 1, 1, 0), 50 * numberOfDrivers), driversProcessed))
 print(h2o.ls(h2oServer))
 rm(driversProcessed)
 activations <- c("RectifierWithDropout", "TanhWithDropout", "Rectifier", "Tanh")
@@ -168,7 +170,7 @@ cvNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResult)), y = 1,
                               l2 = c(0, 1e-5),
                               rho = c(0.95, 0.99),
                               epsilon = c(1e-12, 1e-10, 1e-08),
-                              hidden = c(55, 35, 55), epochs = 250)
+                              hidden = c(50, 40, 50), epochs = 50)
 checkpointModel <- cvNNModel@model[[1]] #Best NN cv model
 deepNetPath <- h2o.saveModel(object = checkpointModel, dir = file.path(workingDirectory), force = TRUE)
 optimalActivation <- cvNNModel@model[[1]]@model$params$activation
@@ -211,7 +213,7 @@ driversProb <- sapply(drivers, function(driver){
                                         l2 = optimall2,
                                         rho = optimalRho,
                                         epsilon = optimalEpsilon,
-                                        hidden = c(55, 35, 55), epochs = 500)
+                                        hidden = c(50, 40, 50), epochs = 500)
   anomalousTrips <- as.data.frame(h2o.anomaly(h2oResult, driverDeepNNModel))
   #MSE error transformation into pseudo-probabilities / chi-squared probability calculation
   #anomalousTrips[, 1] <- pchisq(anomalousTrips[, 1], df = 1)
