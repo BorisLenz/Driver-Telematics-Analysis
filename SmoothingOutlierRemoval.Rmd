@@ -1,0 +1,153 @@
+---
+title: "Smoothing vs. Outlier Removal in AXA's Driver Telematics Analysis competition 
+(or how to fix the Hyperspace Jumps)"
+author: "Mario Vivero"
+date: "1/10/2015"
+output: html_document
+---
+  Smoothing vs. Outlier Removal 
+========================================================
+This article is meant as a graphical comparison between smoothing techniques and simple outlier detection. 
+Most popular data derived from GPS include[1]: 
+-Average velocity
+-Average running velocity except stop
+-Positive acceleration kinetic energy change per unit mass per unit
+-Average acceleration
+-Average deceleration
+-Maximum velocity
+-Maximum acceleration
+etc.
+For most of these features a proper cleaning must be done due to measurement errors or in the case of the AXA competition
+several data points were removed due to privacy concerns. The most notorious example is Driver 1 Trip 136
+as was discussed on the Kaggle forums:
+http://www.kaggle.com/c/axa-driver-telematics-analysis/forums/t/11288/hyperspace-jumps-or-paused-gps-tracking
+
+Driver 1 Trip 136 , around sec 275
+-980.2,250.9
+-1000.3,259.8
+-1545.0,397.5 
+-1569.0,382.1
+
+This will be the trip that I will use to make the graphical comparison between techniques.
+
+Libraries, Functions and Data
+------------
+
+```{r results='hide', message=FALSE}
+#Libraries, directories, options and extra functions----------------------
+require("data.table")
+require("parallel")
+require("h2o")
+require("ggplot2")
+require("prospectr")
+
+#Set Working Directory
+driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/drivers" #change this to your own directories
+
+#Detect available cores
+numCores <- detectCores()
+
+```
+
+We will start by visualizing all the 200 trajectories of a single driver.
+```{r fig.width=16, fig.height=16}
+#Visualization of Trajectories for driver number 1; mcapply only works on linux
+#for more information about parallel alternatives on windows see: http://blog.dominodatalab.com/simple-parallelization/
+results <- mclapply(seq(1, 200), function(file, driverID){
+  tripCoordinates <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
+  return(cbind(tripCoordinates, rep(file, nrow(tripCoordinates))))
+}, mc.cores = numCores, driverID = 1)
+print(paste0("Driver number: ", 1, " processed"))
+dataTableReady2Plot <- do.call(rbind, results)
+#All hail the FSM
+qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
+```
+
+As can be seen from the trajectories, there are two trajectories with missing fragments. So for trajectories like these we will compare techniques that can yield appropiate data.
+
+Trajectory of Driver 1 Trip 136 
+------------
+```{r fig.width=16, fig.height=16}
+driverViz <- 1
+fileViz <- 136
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
+print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
+```
+To determine the speed between each trajectory point we then use the following formula.
+The output of this formula will be a vector of velocities in km/h of length corresponding to the number of points in each trajectory minus 1
+
+```{r fig.width=16, fig.height=16}
+speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
+head(speed2Plot, 50)
+```
+We now explore the distribution of velocities in trip 136 of driver # 1
+
+```{r fig.width=16, fig.height=16}
+ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
+```
+The graph above doesn't look correct. There is a single value corresponding to aproximately 2500 km/h that makes this distribution look funny. So now we will compare different techniques to make this distribution look better.
+A common technique is to use a rolling mean or a rolling median.
+
+```{r fig.width=16, fig.height=16}
+driverViz <- 1
+fileViz <- 136
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x, 20, 1)^2 + diff(tripCoordinates$y, 20, 1)^2) / 20
+ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
+
+```
+
+Unfortunately, using a rolling mean or a median will produce a tail of unexistent data, in our case the neighbors of the point close to the jump in the trajectory. A different window could be used to optimize the velocities but it will be almost imposible to find an appropiate window for all drivers in this dataset.
+
+Let's try now fittin a polinomial using the Savitzky-Golay filter. More information about the Savitzky-Golay filter can be found on http://rpubs.com/wacax/33342 and [3]Beebe at. al., Chemometrics - A Practical Guide
+
+```{r fig.width=16, fig.height=16}
+driverViz <- 1
+fileViz <- 136
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+speed2Plot <- as.data.frame(savitzkyGolay(3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2), p = 3, w = 11, m = 0))
+names(speed2Plot) <- "speed2Plot"
+ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
+```
+
+Again, not a very good idea since it yields some negative values and high positive values.
+Let's now compare a 5 sigma outlier removal technique.
+
+```{r fig.width=16, fig.height=16}
+#Remove data above 5 sigmas (5 standard deviations)
+driverViz <- 1
+fileViz <- 136
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
+#Remove data above 5 sigmas (5 standard deviations)
+speed2Plot2 <- speed2Plot[!speed2Plot > mean(speed2Plot) + sd(speed2Plot) * 5]
+ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
+```
+
+Now this distribution plot shows the exact velocities without strange values which correspond to the data removed from trajectories.
+Let's now compare this preprocessed trajectory with a trajectory without strange values.
+
+```{r fig.width=16, fig.height=16}
+driverViz <- 1
+fileViz <- 1
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
+ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
+
+```
+```{r fig.width=16, fig.height=16}
+#Remove data above 5 sigmas (5 standard deviations)
+speed2Plot2 <- speed2Plot[!speed2Plot > mean(speed2Plot) + sd(speed2Plot) * 5]
+ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
+```
+
+It's evident now that outlier removal yields the most similar results to the trajectories without strange data.
+The outlier removal technique can be used for other features as well such as accelerations, angles and others.
+
+
+Bibliography
+------------
+[1]Wang R., Lukic S. M; Review of Driving Conditions Prediction and Driving Style Recognition Based Control Algorithms for Hybrid Electric Vehicles, 978-1-61284-246-9/11/ ©2011 IEEE http://178.22.59.152/documents/Driving%20Style%20Recognition%20Based.pdf
+[2]http://blog.dominodatalab.com/simple-parallelization/
+[3]Beebe at. al., Chemometrics - A Practical Guide, March 1998, ISBN: 978-0-471-12451-1

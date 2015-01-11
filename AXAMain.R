@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.6 #Added: Angles second revision and outlier detection second revision
+#Ver 0.61 #Added: Angles second revision and outlier detection second revision
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -9,6 +9,7 @@ require("data.table")
 require("parallel")
 require("h2o")
 require("ggplot2")
+require("plotly")
 
 #Set Working Directory
 workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
@@ -106,6 +107,8 @@ results <- mclapply(seq(1, 200), function(file, driverID){
 print(paste0("Driver number: ", driverViz, " processed"))
 dataTableReady2Plot <- do.call(rbind, results)
 qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
+#py <- plotly()
+#py$ggplotly()
 
 ##EDA Pt. 3 Visualization of Speeds with and without outlier replacement
 driverViz <- sample(drivers, 1)
@@ -221,6 +224,7 @@ driversProb <- sapply(drivers, function(driver){
   h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1])
   print(paste0("Driver number ", driver, " processed"))
+  print(paste0(which(drivers == driver), "/", length(drivers)))
   return(anomalousTrips[, 1])
 })
 h2o.shutdown(h2oServer, prompt = FALSE)
@@ -234,5 +238,5 @@ driversProb <- 1 - as.vector(driversProb)
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE,
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 submissionTemplate$prob <- signif(driversProb, digits = 5)
-write.csv(submissionTemplate, file = "SpeedNNMSEPredictionV.csv", row.names = FALSE)
-system('zip SpeedNNMSEPredictionV.zip SpeedNNMSEPredictionV.csv')
+write.csv(submissionTemplate, file = "SpeedNNMSEPredictionVI.csv", row.names = FALSE)
+system('zip SpeedNNMSEPredictionVI.zip SpeedNNMSEPredictionVI.csv')
