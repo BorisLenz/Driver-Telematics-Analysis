@@ -63,7 +63,7 @@ dataTableReady2Plot <- do.call(rbind, results)
 qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
 ```
 
-As can be seen from the trajectories, there are two trajectories with missing fragments. So for trajectories like these we will compare techniques that can yield appropiate data.
+As can be seen from the trajectories, there are two trajectories with missing fragments. So for trajectories like these we will compare techniques that can yield appropriate data.
 
 Trajectory of Driver 1 Trip 136 
 ------------
@@ -86,21 +86,22 @@ We now explore the distribution of velocities in trip 136 of driver # 1
 ```{r fig.width=16, fig.height=16}
 ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
 ```
-The graph above doesn't look correct. There is a single value corresponding to aproximately 2500 km/h that makes this distribution look funny. So now we will compare different techniques to make this distribution look better.
+The graph above doesn't look correct. There is a single value corresponding to approximately 2500 km/h that makes this distribution look funny. So now we will compare different techniques to make this distribution look better.
 A common technique is to use a rolling mean or a rolling median.
 
 ```{r fig.width=16, fig.height=16}
 driverViz <- 1
 fileViz <- 136
 tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
-speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x, 20, 1)^2 + diff(tripCoordinates$y, 20, 1)^2) / 20
+#speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x, 20, 1)^2 + diff(tripCoordinates$y, 20, 1)^2) / 20 #generic function
+speed2Plot <- movav(3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2), w = 11)  #prospectr package function
 ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
 
 ```
 
-Unfortunately, using a rolling mean or a median will produce a tail of unexistent data, in our case the neighbors of the point close to the jump in the trajectory. A different window could be used to optimize the velocities but it will be almost imposible to find an appropiate window for all drivers in this dataset.
+Unfortunately, using a rolling mean or a median will produce a tail of nonexistent data, in our case the neighbors of the point close to the jump in the trajectory. A different window could be used to optimize the velocities but it will be almost impossible to find an appropriate window for all drivers in this dataset.
 
-Let's try now fittin a polinomial using the Savitzky-Golay filter. More information about the Savitzky-Golay filter can be found on http://rpubs.com/wacax/33342 and [3]Beebe at. al., Chemometrics - A Practical Guide
+Let's try now fitting a polynomial using the Savitzky-Golay filter. More information about the Savitzky-Golay filter can be found on http://rpubs.com/wacax/33342 and [3]Beebe at. al., Chemometrics - A Practical Guide
 
 ```{r fig.width=16, fig.height=16}
 driverViz <- 1
