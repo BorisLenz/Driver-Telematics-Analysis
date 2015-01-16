@@ -190,7 +190,7 @@ if ("deepNetPath" %in% ls()){
 driversPredictions <- lapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  results <- scale(matrix(results, nrow = 200, byrow = TRUE))
+  results <- matrix(results, nrow = 200, byrow = TRUE)
   print(paste0("Driver number ", driver, " processed"))
   
   #Sample data from other drivers  
@@ -201,7 +201,7 @@ driversPredictions <- lapply(drivers, function(driver){
     print(paste0("Driver number: ", driver, " processed"))
     return(results)
   })
-  ExtraDrivers <- scale(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE))  
+  ExtraDrivers <- matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE)
   ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
   
   #LOF Algorithm
