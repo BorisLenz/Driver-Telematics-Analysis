@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.72 #Added: GBM Modelling and first sketch of pretraining added
+#Ver 0.74 #all data included, faster GBM and better deeplearning h2o from command line
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -10,7 +10,7 @@ require("parallel")
 require("h2o")
 require("DMwR")
 require("ggplot2")
-require("plotly")
+#require("plotly")
 
 #Set Working Directory
 workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
@@ -18,13 +18,16 @@ setwd(workingDirectory)
 driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/drivers"
 otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/"
 vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
+#h2o location
+h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
+
 #List all possible drivers identities
 drivers <- list.files(driversDirectory)
 #Detect available cores
 numCores <- detectCores()
 
 #Extra Functions
-source(paste0(workingDirectory, "Factor2Probability.R"))
+source(paste0(workingDirectory, "pretrainh2oNN.R"))
 
 #Data Mining (Functions)------------------------
 #Outlier Removal and transformation to quantiles
@@ -100,8 +103,6 @@ driversProcessed <- sapply(initialDrivers, function(driver){
 driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE))
 
 #Init h2o Server
-#If there is need to start h2o from command line:
-#system(paste0("java -Xmx55G -jar ", h2o.jarLoc, " -port 54333 -name CTR -data_max_factor_levels 100000000 &"))
 #Start h2o directly from R
 h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
 h2oResult <- as.h2o(h2oServer, driversProcessed)
@@ -175,8 +176,10 @@ biplot(prcomp(results), cex=.8)
 #load(file.path(workingDirectory, "deepNetPath.RData"))
 
 #Init h2o Server
-#Start h2o directly from R
-h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
+#Start h2o from command line
+system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
+#Connect R to h2o
+h2oServer <- h2o.init(ip = "localhost", port = 54321, nthreads = -1)  
 checkpointModelKey <- ""
 checkpointModel <- ""
 
@@ -212,19 +215,23 @@ driversPredictions <- lapply(drivers, function(driver){
   #R matrix conversion to h2o object and stored in the server
   h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
                                                  rbind(results, ExtraDrivers)))
-  h2oResultPlusExtras <- h2o.splitFrame(h2oResultPlusExtras, ratios = 0.99, shuffle = TRUE)[[1]]
   h2oResultsNthDriver <- as.h2o(h2oServer, results)
   print(h2o.ls(h2oServer))
+  
+  #Shuffle indexes
+  #set.seed(1001001)
+  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
       
   #h2o.ai GBM algorithm
   driverGBMModel <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                data = h2oResultPlusExtras,
+                                data = h2oResultPlusExtras[randIdxs, ],
                                 distribution = "bernoulli",
                                 interaction.depth = c(2, 4, 7),
                                 shrinkage = c(0.001, 0.003), 
-                                n.trees = 1000)
+                                n.trees = 800)
   
   bestGBMModel <- driverGBMModel@model[[1]] #Best GBM cv model
+  print(bestGBMModel)
   
   #probability Prediction of trips in Nth driver 
   predictionGBM <- signif(as.data.frame(h2o.predict(bestGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
@@ -233,7 +240,8 @@ driversPredictions <- lapply(drivers, function(driver){
   #h20.ai deep learning algorithm  
   driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                         activation = "Tanh",
-                                        data = h2oResultPlusExtras, fast_mode = TRUE,
+                                        data = h2oResultPlusExtras[randIdxs, ],
+                                        fast_mode = TRUE,
                                         classification = TRUE,
                                         checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
                                         input_dropout_ratio = c(0, 0.1),
@@ -243,9 +251,10 @@ driversPredictions <- lapply(drivers, function(driver){
                                         rho = c(0.95, 0.99),
                                         epsilon = c(1e-10, 1e-8),
                                         hidden = c(50, 40, 50), 
-                                        epochs = 100)
+                                        epochs = 150)
   
   bestDeepNNModel <- driverDeepNNModel@model[[1]] #Best NN cv model
+  print(bestDeepNNModel)
   
   #probability Prediction trips in Nth driver 
   predictionNN <- signif(as.data.frame(h2o.predict(bestDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
