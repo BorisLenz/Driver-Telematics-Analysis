@@ -177,7 +177,7 @@ biplot(prcomp(results), cex=.8)
 
 #Init h2o Server
 #Start h2o from command line
-system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
+system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54321 -name AXA &"))
 #Connect R to h2o
 h2oServer <- h2o.init(ip = "localhost", port = 54321, nthreads = -1)  
 checkpointModelKey <- ""
@@ -251,7 +251,7 @@ driversPredictions <- lapply(drivers, function(driver){
                                         rho = c(0.95, 0.99),
                                         epsilon = c(1e-10, 1e-8),
                                         hidden = c(50, 40, 50), 
-                                        epochs = 150)
+                                        epochs = 125)
   
   bestDeepNNModel <- driverDeepNNModel@model[[1]] #Best NN cv model
   print(bestDeepNNModel)
