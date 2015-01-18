@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.74 #all data included, faster GBM and better deeplearning h2o from command line
+#Ver 0.75 #limit data to 4 significant digits
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -193,7 +193,7 @@ if ("deepNetPath" %in% ls()){
 driversPredictions <- lapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  results <- matrix(results, nrow = 200, byrow = TRUE)
+  results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 4)
   print(paste0("Driver number ", driver, " processed"))
   
   #Sample data from other drivers  
@@ -204,7 +204,7 @@ driversPredictions <- lapply(drivers, function(driver){
     print(paste0("Driver number: ", driver, " processed"))
     return(results)
   })
-  ExtraDrivers <- matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE)
+  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 4)
   ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
   
   #LOF Algorithm
@@ -265,20 +265,20 @@ driversPredictions <- lapply(drivers, function(driver){
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
   print(paste0(which(drivers == driver), "/", length(drivers)))
   
-  return(cbind(predictionGBM[, 1], predictionGBMRank, 
-               predictionNN[, 1], predictionNNRank,
-               lofDriver, lofDriverRanking))
+  return(cbind(lofDriver, lofDriverRanking,
+               predictionGBM[, 1], predictionGBMRank, 
+               predictionNN[, 1], predictionNNRank))
 })
 h2o.shutdown(h2oServer, prompt = FALSE)
 
 driversPredictions <- do.call(rbind, driversPredictions)
 
-GBMProb <- driversPredictions[, 1]
-GBMRank <- driversPredictions[, 2]
-deepNNProb <- driversPredictions[, 3]
-deepNNRank <- driversPredictions[, 4]
-lofScore <- driversPredictions[, 5]
-lofRank <- driversPredictions[, 6]
+lofScore <- driversPredictions[, 1]
+lofRank <- driversPredictions[, 2]
+GBMProb <- driversPredictions[, 3]
+GBMRank <- driversPredictions[, 4]
+deepNNProb <- driversPredictions[, 5]
+deepNNRank <- driversPredictions[, 6]
 
 #Write .csv files-------------------------
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE,
