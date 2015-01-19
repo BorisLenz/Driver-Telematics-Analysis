@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.75 #limit data to 4 significant digits
+#Ver 0.76 #limit data to 3 significant digits, more features.
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -31,7 +31,7 @@ source(paste0(workingDirectory, "pretrainh2oNN.R"))
 
 #Data Mining (Functions)------------------------
 #Outlier Removal and transformation to quantiles
-quantSigma <- function(vector, sigma = 5, returnVector = TRUE){
+quantSigma <- function(vector, sigma = 4, returnVector = TRUE){
   #n-sigma removal
   vectorWithoutOutliers <- vector[!vector > mean(vector) + sd(vector) * sigma]
   if (returnVector == TRUE){
@@ -48,7 +48,7 @@ speedDistribution <- function(trip){
   return(speedList)
 }
 #Angles Mining with Angle Rotation
-angleVector <- function(dir, sigma = 4){
+angleVector <- function(dir){
   dir <- as.data.table(cbind(diff(dir$x), diff(dir$y)))
   setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
   #Returns the angles between vectors
@@ -60,9 +60,9 @@ angleVector <- function(dir, sigma = 4){
   #NAs removal
   angles <- na.omit(angles)
   #set orthogonal values to zero
-  angles[angles >= 90] <- 0  
+  angles[angles >= 85] <- 0  
   #Outliers removal
-  anglesWoOutliers <- quantSigma(angles, sigma = 4)
+  anglesWoOutliers <- quantSigma(angles)
   return(anglesWoOutliers)
 }
 #Define function to be passed as parallel
@@ -71,9 +71,9 @@ transform2Percentiles <- function(file, driverID){
   #Velocities
   speedData <- speedDistribution(trip)
   speedDist <- speedData[[1]]
-  accelerations <- diff(speedData[[2]])
   #Accelerations
-  accelerationDist <- quantSigma(accelerations, sigma = 4,  returnVector = FALSE)
+  accelerations <- diff(speedData[[2]])
+  accelerationDist <- quantSigma(accelerations, returnVector = FALSE)
   #Distances
   distances <- sqrt((diff(trip$x)^2) + (diff(trip$y)^2))
   distances[distances > mean(distances) + sd(distances) * 5] <- NA
@@ -86,8 +86,8 @@ transform2Percentiles <- function(file, driverID){
   #anglesPlusSpeedist <- anglesPlusSpeedist[!anglesPlusSpeedist > sd(anglesPlusSpeedist) * 5]
   #anglesPlusSpeedist <- quantile(anglesPlusSpeedist, seq(0.05, 1, by=0.05))
   
-  return(c(speedDist, accelerationDist, distanceTrip, turningAnglesDist))
-  #return(c(speedDist, accelerationDist, distanceTrip, turningAnglesDist, anglesPlusSpeedist))
+  return(c(speedDist, accelerationDist, turningAnglesDist, 
+           sd(accelerations[accelerations > 0]), sd(accelerations[accelerations < 0]), distanceTrip, nrow(trip)))
 }
 
 #EDA----------------------------------------
@@ -120,7 +120,7 @@ driverViz <- sample(drivers, 1)
 results <- mclapply(seq(1, 200), function(file, driverID){
   tripCoordinates <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
   return(cbind(tripCoordinates, rep(file, nrow(tripCoordinates))))
-}, mc.cores = numCores, driverID = driverViz)
+}, mc.cores = numCores, driverID = driverViz)https://github.com/h2oai/h2o/blob/master/R/examples/Kaggle/CTR.R
 print(paste0("Driver number: ", driverViz, " processed"))
 dataTableReady2Plot <- do.call(rbind, results)
 qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
@@ -180,8 +180,8 @@ biplot(prcomp(results), cex=.8)
 system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54321 -name AXA &"))
 #Connect R to h2o
 h2oServer <- h2o.init(ip = "localhost", port = 54321, nthreads = -1)  
-checkpointModelKey <- ""
-checkpointModel <- ""
+#checkpointModelKey <- ""
+#checkpointModel <- ""
 
 if ("deepNetPath" %in% ls()){
   #Load pretrained model
@@ -193,7 +193,7 @@ if ("deepNetPath" %in% ls()){
 driversPredictions <- lapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 4)
+  results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
   print(paste0("Driver number ", driver, " processed"))
   
   #Sample data from other drivers  
@@ -204,12 +204,13 @@ driversPredictions <- lapply(drivers, function(driver){
     print(paste0("Driver number: ", driver, " processed"))
     return(results)
   })
-  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 4)
+  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
   ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
   
   #LOF Algorithm
   lofDriver <- lofactor(results, k=5)
   lofDriverRanking <- rank(-lofDriver)
+  lofDriver <- (-lofDriver) + 10
   print(paste0("Driver number ", driver, " processed with the LOF Algorithm"))  
   
   #R matrix conversion to h2o object and stored in the server
@@ -231,7 +232,6 @@ driversPredictions <- lapply(drivers, function(driver){
                                 n.trees = 800)
   
   bestGBMModel <- driverGBMModel@model[[1]] #Best GBM cv model
-  print(bestGBMModel)
   
   #probability Prediction of trips in Nth driver 
   predictionGBM <- signif(as.data.frame(h2o.predict(bestGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
@@ -239,13 +239,13 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #h20.ai deep learning algorithm  
   driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                        activation = "Tanh",
+                                        activation = c("TanhWithDropout", "Tanh"),
                                         data = h2oResultPlusExtras[randIdxs, ],
                                         fast_mode = TRUE,
                                         classification = TRUE,
-                                        checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                        input_dropout_ratio = c(0, 0.1),
-                                        hidden_dropout_ratios = list(c(0, 0, 0), c(0.2, 0.2, 0.2)),
+                                        #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
+                                        input_dropout_ratio = c(0, 0.2),
+                                        hidden_dropout_ratios = list(c(0, 0, 0), c(0.5, 0.5, 0.5)),
                                         l1 = c(0, 1e-5),
                                         l2 = c(0, 1e-5),
                                         rho = c(0.95, 0.99),
@@ -254,15 +254,15 @@ driversPredictions <- lapply(drivers, function(driver){
                                         epochs = 125)
   
   bestDeepNNModel <- driverDeepNNModel@model[[1]] #Best NN cv model
-  print(bestDeepNNModel)
-  
+    
   #probability Prediction trips in Nth driver 
   predictionNN <- signif(as.data.frame(h2o.predict(bestDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
   predictionNNRank <- rank(predictionNN[, 1])
     
   print(h2o.ls(h2oServer))
-  h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
-  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
+  #h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
+  #h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
+  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1]) 
   print(paste0(which(drivers == driver), "/", length(drivers)))
   
   return(cbind(lofDriver, lofDriverRanking,
