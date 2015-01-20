@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.76 #limit data to 3 significant digits, more features.
+#Ver 0.77 #Scaled data
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -208,15 +208,14 @@ driversPredictions <- lapply(drivers, function(driver){
   ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
   
   #LOF Algorithm
-  lofDriver <- lofactor(results, k=5)
-  lofDriverRanking <- rank(-lofDriver)
-  lofDriver <- (-lofDriver) + 10
+  lofDriver <- -(lofactor(results, k=5)) + 10
+  lofDriverRanking <- rank(lofDriver)
   print(paste0("Driver number ", driver, " processed with the LOF Algorithm"))  
   
   #R matrix conversion to h2o object and stored in the server
   h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                 rbind(results, ExtraDrivers)))
-  h2oResultsNthDriver <- as.h2o(h2oServer, results)
+                                                 signif(scale(rbind(results, ExtraDrivers)), digits = 4)))
+  h2oResultsNthDriver <- h2oResultPlusExtras[1:nrow(results), ]
   print(h2o.ls(h2oServer))
   
   #Shuffle indexes
@@ -224,39 +223,56 @@ driversPredictions <- lapply(drivers, function(driver){
   randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
       
   #h2o.ai GBM algorithm
-  driverGBMModel <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+  driverGBMModelCV <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                 data = h2oResultPlusExtras[randIdxs, ],
                                 distribution = "bernoulli",
                                 interaction.depth = c(2, 4, 7),
                                 shrinkage = c(0.001, 0.003), 
-                                n.trees = 800)
+                                n.trees = 100)
   
-  bestGBMModel <- driverGBMModel@model[[1]] #Best GBM cv model
-  
+  driverGBMModel <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                               data = h2oResultPlusExtras[randIdxs, ],
+                               distribution = "bernoulli",
+                               interaction.depth = driverGBMModelCV@model[[1]]@model$params$interaction.depth,
+                               shrinkage = driverGBMModelCV@model[[1]]@model$params$shrinkage, 
+                               n.trees = 2000)  
+
   #probability Prediction of trips in Nth driver 
-  predictionGBM <- signif(as.data.frame(h2o.predict(bestGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
+  predictionGBM <- signif(as.data.frame(h2o.predict(driverGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
   predictionGBMRank <- rank(predictionGBM[, 1])
   
   #h20.ai deep learning algorithm  
-  driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                        activation = c("TanhWithDropout", "Tanh"),
-                                        data = h2oResultPlusExtras[randIdxs, ],
-                                        fast_mode = TRUE,
-                                        classification = TRUE,
-                                        #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                        input_dropout_ratio = c(0, 0.2),
-                                        hidden_dropout_ratios = list(c(0, 0, 0), c(0.5, 0.5, 0.5)),
-                                        l1 = c(0, 1e-5),
-                                        l2 = c(0, 1e-5),
-                                        rho = c(0.95, 0.99),
-                                        epsilon = c(1e-10, 1e-8),
-                                        hidden = c(50, 40, 50), 
-                                        epochs = 125)
-  
-  bestDeepNNModel <- driverDeepNNModel@model[[1]] #Best NN cv model
-    
+  #Cross Validation
+  driverDeepNNModelCV <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                          data = h2oResultPlusExtras[randIdxs, ],   
+                                          classification = TRUE,
+                                          #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
+                                          activation = "Tanh",
+                                          input_dropout_ratio = c(0, 0.2),
+                                          l1 = c(0, 1e-5),
+                                          l2 = c(0, 1e-5),
+                                          rho = c(0.95, 0.99),
+                                          epsilon = c(1e-12, 1e-10, 1e-08),
+                                          hidden = c(100, 70, 100), 
+                                          epochs = 55)  
+  print(driverDeepNNModelCV@model[[1]]@model$params)
+  driverDeepNNModel <- driverDeepNNModelCV@model[[1]]
+  print(driverDeepNNModel)
+  #Model Training
+  #driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+  #                                      data = h2oResultPlusExtras[randIdxs, ],   
+  #                                      classification = TRUE,
+  #                                      activation = "Tanh",
+  #                                      input_dropout_ratio = driverDeepNNModelCV@model[[1]]@model$params$input_dropout_ratio,
+  #                                      l1 = driverDeepNNModelCV@model[[1]]@model$params$l1,
+  #                                      l2 = driverDeepNNModelCV@model[[1]]@model$params$l2,
+  #                                      rho = driverDeepNNModelCV@model[[1]]@model$params$rho,
+  #                                      epsilon = driverDeepNNModelCV@model[[1]]@model$params$epsilon,
+  #                                      hidden = c(75, 65, 75), 
+  #                                      epochs = 200)  
+
   #probability Prediction trips in Nth driver 
-  predictionNN <- signif(as.data.frame(h2o.predict(bestDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
+  predictionNN <- as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3])
   predictionNNRank <- rank(predictionNN[, 1])
     
   print(h2o.ls(h2oServer))
