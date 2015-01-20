@@ -248,13 +248,13 @@ driversPredictions <- lapply(drivers, function(driver){
                                           classification = TRUE,
                                           #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
                                           activation = "Tanh",
-                                          input_dropout_ratio = c(0, 0.2),
+                                          input_dropout_ratio = c(0, 0.1),
                                           l1 = c(0, 1e-5),
                                           l2 = c(0, 1e-5),
                                           rho = c(0.95, 0.99),
-                                          epsilon = c(1e-12, 1e-10, 1e-08),
-                                          hidden = c(100, 70, 100), 
-                                          epochs = 55)  
+                                          epsilon = c(1e-12, 1e-10),
+                                          hidden = c(60, 60, 40, 60, 60), 
+                                          epochs = 50)  
   print(driverDeepNNModelCV@model[[1]]@model$params)
   driverDeepNNModel <- driverDeepNNModelCV@model[[1]]
   print(driverDeepNNModel)
