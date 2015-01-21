@@ -176,10 +176,13 @@ biplot(prcomp(results), cex=.8)
 #load(file.path(workingDirectory, "deepNetPath.RData"))
 
 #Init h2o Server
+#Start from R
+#h2oServer <- h2o.init(ip = "localhost", port = 54321, max_mem_size = '13g', startH2O = TRUE, nthreads = -1)
+
 #Start h2o from command line
-system(paste0("java -Xmx10G -jar ", h2o.jarLoc, " -port 54321 -name AXA &"))
+system(paste0("java -Xmx10G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
 #Connect R to h2o
-h2oServer <- h2o.init(ip = "localhost", port = 54321, nthreads = -1)  
+h2oServer <- h2o.init(ip = "localhost", port = 54333, nthreads = -1)  
 #checkpointModelKey <- ""
 #checkpointModel <- ""
 
