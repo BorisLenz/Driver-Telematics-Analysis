@@ -211,19 +211,19 @@ driversPredictions <- lapply(drivers, function(driver){
   ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
   
   #LOF Algorithm
-  lofDriver <- -(lofactor(results, k=5)) + 10
+  lofDriver <- signif(-(lofactor(results, k=10)) + 10, digits = 4)
   lofDriverRanking <- rank(lofDriver)
   print(paste0("Driver number ", driver, " processed with the LOF Algorithm"))  
+  
+  #Shuffle indexes
+  #set.seed(1001001)
+  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
   
   #R matrix conversion to h2o object and stored in the server
   h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
                                                  signif(scale(rbind(results, ExtraDrivers)), digits = 4)))
   h2oResultsNthDriver <- h2oResultPlusExtras[1:nrow(results), ]
   print(h2o.ls(h2oServer))
-  
-  #Shuffle indexes
-  #set.seed(1001001)
-  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
   
   #h2o.ai GBM algorithm
   #Cross Validation + Modelling
