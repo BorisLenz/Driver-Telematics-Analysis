@@ -179,7 +179,8 @@ biplot(prcomp(results), cex=.8)
 SpotInstance <- TRUE
 if (SpotInstance == TRUE){
   driversProcessed <- gsub(pattern = ".csv", replacement = "", x = list.files(outputDirectory))
-  drivers <- c(driversProcessed[length(driversProcessed)], which(!list.files(driversDirectory) %in% driversProcessed))
+  drivers <- c(driversProcessed[length(driversProcessed)],
+               list.files(driversDirectory)[!(list.files(driversDirectory) %in% driversProcessed)])
 }
 
 #Init h2o Server
@@ -318,7 +319,7 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
   #h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
-  print(paste0(which(drivers == driver), "/", length(drivers)))
+  print(paste0(which(drivers == driver), "/", length(list.files(driversDirectory))))
   
   if (SpotInstance == TRUE){
     write.csv(cbind(lofDriver, lofDriverRanking,
