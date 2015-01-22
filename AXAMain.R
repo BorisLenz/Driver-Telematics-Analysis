@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.79 #Random Forests included + server cleaning at each modelling
+#Ver 0.7.10 #code altered for possible use in an AWS spot instance
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -13,10 +13,11 @@ require("ggplot2")
 #require("plotly")
 
 #Set Working Directory
-workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/"
+workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/"
 setwd(workingDirectory)
-driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/drivers"
-otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA Driver Telematics Analysis/Data/"
+driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/drivers"
+otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
+outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
 vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
 #h2o location
 h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
@@ -41,26 +42,25 @@ quantSigma <- function(vector, sigma = 4, returnVector = TRUE){
   }
 }
 #Transform data to speed distributions
-speedDistribution <- function(trip){
-  speed <- 3.6 * sqrt(diff(trip$x)^2 + diff(trip$y)^2)
+speedDistribution <- function(coordinates){
+  speed <- 3.6 * sqrt(diff(coordinates$x)^2 + diff(coordinates$y)^2)
   #n-sigma removal
   speedList <- quantSigma(speed)
   return(speedList)
 }
 #Angles Mining with Angle Rotation
-angleVector <- function(dir){
-  dir <- as.data.table(cbind(diff(dir$x), diff(dir$y)))
-  setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
+angleVector <- function(coordinatesAng){
+  coorDT <- as.data.table(cbind(diff(coordinatesAng$x), diff(coordinatesAng$y)))
   #Returns the angles between vectors
-  #dir is a 2D-array of shape (N,M) representing N vectors in M-dimensional space.
+  #coordinatesAng is a 2D-array of shape (N,M) representing N vectors in M-dimensional space.
   #It returns a vector which is a 1D-array of values of shape (N-1,), with each value between 0 and pi.
-  dir2 <- dir[2:nrow(dir)]
-  dir1 <- dir[1:(nrow(dir) - 1)]
+  dir2 <- coorDT[2:nrow(coorDT)]
+  dir1 <- coorDT[1:(nrow(coorDT) - 1)]
   angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
   #NAs removal
   angles <- na.omit(angles)
   #set orthogonal values to zero
-  angles[angles >= 85] <- 0  
+  angles[angles >= 89] <- 0  
   #Outliers removal
   anglesWoOutliers <- quantSigma(angles)
   return(anglesWoOutliers)
@@ -175,6 +175,13 @@ biplot(prcomp(results), cex=.8)
 #Modelling---------------------------
 #load(file.path(workingDirectory, "deepNetPath.RData"))
 
+#Interrupting Remote Instance (in case this is running on an AWS spot instance)
+SpotInstance <- TRUE
+if (SpotInstance == TRUE){
+  driversProcessed <- gsub(pattern = ".csv", replacement = "", x = list.files(outputDirectory))
+  drivers <- c(driversProcessed[length(driversProcessed)], which(!list.files(driversDirectory) %in% driversProcessed))
+}
+
 #Init h2o Server
 #Start from R
 #h2oServer <- h2o.init(ip = "localhost", port = 54321, max_mem_size = '13g', startH2O = TRUE, nthreads = -1)
@@ -228,11 +235,11 @@ driversPredictions <- lapply(drivers, function(driver){
   #h2o.ai GBM algorithm
   #Cross Validation + Modelling
   driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                    data = h2oResultPlusExtras[randIdxs, ],
-                                    classification = TRUE,
-                                    ntree = c(50, 75, 100),
-                                    depth = c(20, 40, 60), 
-                                    verbose = TRUE)
+                                      data = h2oResultPlusExtras[randIdxs, ],
+                                      classification = TRUE,
+                                      ntree = c(50, 75, 100),
+                                      depth = c(20, 40, 60), 
+                                      verbose = TRUE)
   
   driverRFModel <- driverRFModelCV@model[[1]]
   print(driverRFModel)
@@ -241,7 +248,7 @@ driversPredictions <- lapply(drivers, function(driver){
   predictionRF <- signif(as.data.frame(h2o.predict(driverRFModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
   predictionRFRank <- rank(predictionRF[, 1])
   print(h2o.ls(h2oServer))
-    
+  
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
   print(paste0("Driver number ", driver, " processed with RFs")) 
   
@@ -254,19 +261,19 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #Cross Validation
   driverGBMModelCV <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                data = h2oResultPlusExtras[randIdxs, ],
-                                distribution = "bernoulli",
-                                interaction.depth = c(2, 4, 7),
-                                shrinkage = c(0.001, 0.003), 
-                                n.trees = 100)
+                               data = h2oResultPlusExtras[randIdxs, ],
+                               distribution = "bernoulli",
+                               interaction.depth = c(2, 4, 7),
+                               shrinkage = c(0.001, 0.003), 
+                               n.trees = 100)
   
   #Modelling
   driverGBMModel <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                               data = h2oResultPlusExtras[randIdxs, ],
-                               distribution = "bernoulli",
-                               interaction.depth = driverGBMModelCV@model[[1]]@model$params$interaction.depth,
-                               shrinkage = driverGBMModelCV@model[[1]]@model$params$shrinkage, 
-                               n.trees = 2000)  
+                             data = h2oResultPlusExtras[randIdxs, ],
+                             distribution = "bernoulli",
+                             interaction.depth = driverGBMModelCV@model[[1]]@model$params$interaction.depth,
+                             shrinkage = driverGBMModelCV@model[[1]]@model$params$shrinkage, 
+                             n.trees = 2000)  
   
   print(driverGBMModel)
   
@@ -274,10 +281,10 @@ driversPredictions <- lapply(drivers, function(driver){
   predictionGBM <- signif(as.data.frame(h2o.predict(driverGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
   predictionGBMRank <- rank(predictionGBM[, 1])
   print(h2o.ls(h2oServer))
-    
+  
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])     
   print(paste0("Driver number ", driver, " processed with GBMs"))  
-    
+  
   #h20.ai deep learning algorithm 
   #R matrix conversion to h2o object and stored in the server
   h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
@@ -296,30 +303,52 @@ driversPredictions <- lapply(drivers, function(driver){
                                           rho = c(0.95, 0.99),
                                           epsilon = c(1e-12, 1e-10),
                                           hidden = c(60, 60, 40, 60, 60), 
-                                          epochs = 50)  
+                                          epochs = 60)  
   
   driverDeepNNModel <- driverDeepNNModelCV@model[[1]]
   print(driverDeepNNModel)
-
+  
   #probability Prediction trips in Nth driver 
   predictionNN <- as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3])
   predictionNNRank <- rank(predictionNN[, 1])
   print(h2o.ls(h2oServer))
-    
+  
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
   print(paste0("Driver number ", driver, " processed with Deep NNs"))  
-      
+  
   #h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
   #h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
   print(paste0(which(drivers == driver), "/", length(drivers)))
   
-  return(cbind(lofDriver, lofDriverRanking,
-               predictionRF[, 1], predictionRFRank, 
-               predictionGBM[, 1], predictionGBMRank, 
-               predictionNN[, 1], predictionNNRank))
+  if (SpotInstance == TRUE){
+    write.csv(cbind(lofDriver, lofDriverRanking,
+                    predictionRF[, 1], predictionRFRank, 
+                    predictionGBM[, 1], predictionGBMRank, 
+                    predictionNN[, 1], predictionNNRank), 
+              file = file.path(outputDirectory, paste0(driver, ".csv")), row.names = FALSE)
+    return(TRUE)
+    
+  }else{
+    return(cbind(lofDriver, lofDriverRanking,
+                 predictionRF[, 1], predictionRFRank, 
+                 predictionGBM[, 1], predictionGBMRank, 
+                 predictionNN[, 1], predictionNNRank))
+  }  
 })
+#Shutdown h20 instance
 h2o.shutdown(h2oServer, prompt = FALSE)
 
+if (SpotInstance == TRUE){
+  #List all possible drivers identities
+  driversOutput <- list.files(outputDirectory)   
+  driversPredictions <- lapply(driversOutput, function(driver){
+    predictions <- fread(file.path(outputDirectory, driver), header = TRUE,
+                         stringsAsFactors = FALSE)
+    return(predictions)
+  })
+}
+
+#Concatenate lists into a data.frame
 driversPredictions <- do.call(rbind, driversPredictions)
 
 lofScore <- driversPredictions[, 1]
