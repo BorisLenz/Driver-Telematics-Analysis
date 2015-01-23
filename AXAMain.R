@@ -315,13 +315,13 @@ driversPredictions <- lapply(drivers, function(driver){
   print(driverDeepNNModel3)
   
   #probability Predictions on all trips in Nth driver 
-  predictionNN <- as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3])
+  predictionNN <- signif(as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 7)
   predictionNNRank <- rank(predictionNN[, 1])
   
-  predictionNN2 <- as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3])
+  predictionNN2 <- signif(as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3]), digits = 7)
   predictionNNRank2 <- rank(predictionNN2[, 1])
   
-  predictionNN3 <- as.data.frame(h2o.predict(driverDeepNNModel3, newdata = h2oResultsNthDriver)[, 3])
+  predictionNN3 <- signif(as.data.frame(h2o.predict(driverDeepNNModel3, newdata = h2oResultsNthDriver)[, 3]), digits = 7)
   predictionNNRank3 <- rank(predictionNN3[, 1])
   print(h2o.ls(h2oServer))
   
