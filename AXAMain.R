@@ -307,11 +307,22 @@ driversPredictions <- lapply(drivers, function(driver){
                                           epochs = 60)  
   
   driverDeepNNModel <- driverDeepNNModelCV@model[[1]]
-  print(driverDeepNNModel)
+  driverDeepNNModel2 <- driverDeepNNModelCV@model[[2]]
+  driverDeepNNModel3 <- driverDeepNNModelCV@model[[3]]
   
-  #probability Prediction trips in Nth driver 
+  print(driverDeepNNModel)
+  print(driverDeepNNModel2)
+  print(driverDeepNNModel3)
+  
+  #probability Predictions on all trips in Nth driver 
   predictionNN <- as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3])
   predictionNNRank <- rank(predictionNN[, 1])
+  
+  predictionNN2 <- as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3])
+  predictionNNRank2 <- rank(predictionNN2[, 1])
+  
+  predictionNN3 <- as.data.frame(h2o.predict(driverDeepNNModel3, newdata = h2oResultsNthDriver)[, 3])
+  predictionNNRank3 <- rank(predictionNN3[, 1])
   print(h2o.ls(h2oServer))
   
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
@@ -325,7 +336,9 @@ driversPredictions <- lapply(drivers, function(driver){
     write.csv(cbind(lofDriver, lofDriverRanking,
                     predictionRF[, 1], predictionRFRank, 
                     predictionGBM[, 1], predictionGBMRank, 
-                    predictionNN[, 1], predictionNNRank), 
+                    predictionNN[, 1], predictionNNRank, 
+                    predictionNN2[, 1], predictionNNRank2, 
+                    predictionNN3[, 1], predictionNNRank3), 
               file = file.path(outputDirectory, paste0(driver, ".csv")), row.names = FALSE)
     return(TRUE)
     
@@ -333,7 +346,9 @@ driversPredictions <- lapply(drivers, function(driver){
     return(cbind(lofDriver, lofDriverRanking,
                  predictionRF[, 1], predictionRFRank, 
                  predictionGBM[, 1], predictionGBMRank, 
-                 predictionNN[, 1], predictionNNRank))
+                 predictionNN[, 1], predictionNNRank,
+                 predictionNN2[, 1], predictionNNRank2, 
+                 predictionNN3[, 1], predictionNNRank3))
   }  
 })
 #Shutdown h20 instance
