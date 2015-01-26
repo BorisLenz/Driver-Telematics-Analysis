@@ -1,5 +1,7 @@
 #AXA Driver Telematics Analysis
-#Ver 0.7.11 #5 fold cross validation added plus 2 better model picking *IMPORTANT*
+#Ver 0.8 # *IMPORTANT* Improved data mining (now it includes turning angle times speed), 
+#improved validation (5 fold x validation), more negative values from more drivers, 
+#and time in seconds stoped (velocity = 0).
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -34,19 +36,17 @@ source(paste0(workingDirectory, "pretrainh2oNN.R"))
 #Outlier Removal and transformation to quantiles
 quantSigma <- function(vector, sigma = 4, returnVector = TRUE){
   #n-sigma removal
-  vectorWithoutOutliers <- vector[!vector > mean(vector) + sd(vector) * sigma]
+  vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   if (returnVector == TRUE){
-    return(list(quantile(vectorWithoutOutliers, seq(0.05, 1, by=0.05)), vectorWithoutOutliers))
+    return(list(quantile(vectorWithoutOutliers, seq(0.1, 1, by=0.1)), vectorWithoutOutliers))
   }else{
-    return(quantile(vectorWithoutOutliers, seq(0.05, 1, by=0.05)))    
+    return(quantile(vectorWithoutOutliers, seq(0.1, 1, by=0.1)))    
   }
 }
 #Transform data to speed distributions
-speedDistribution <- function(coordinates){
+velocitiesKH <- function(coordinates){
   speed <- 3.6 * sqrt(diff(coordinates$x)^2 + diff(coordinates$y)^2)
-  #n-sigma removal
-  speedList <- quantSigma(speed)
-  return(speedList)
+  return(speed)
 }
 #Angles Mining with Angle Rotation
 angleVector <- function(coordinatesAng){
@@ -56,24 +56,27 @@ angleVector <- function(coordinatesAng){
   #It returns a vector which is a 1D-array of values of shape (N-1,), with each value between 0 and pi.
   dir2 <- coorDT[2:nrow(coorDT)]
   dir1 <- coorDT[1:(nrow(coorDT) - 1)]
-  angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
+  rawAngles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^2) * rowSums(dir2^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
   #NAs removal
-  angles <- na.omit(angles)
+  angles <- na.omit(rawAngles)
   #set orthogonal values to zero
   angles[angles >= 89] <- 0  
   #Outliers removal
-  anglesWoOutliers <- quantSigma(angles)
-  return(anglesWoOutliers)
+  anglesWoOutliers <- quantSigma(angles, returnVector = FALSE)
+  return(list(anglesWoOutliers, rawAngles))
 }
 #Define function to be passed as parallel
 transform2Percentiles <- function(file, driverID){
   trip <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
   #Velocities
-  speedData <- speedDistribution(trip)
-  speedDist <- speedData[[1]]
+  rawVelocities <- velocitiesKH(trip)
+  #n-sigma removal
+  velocityData <- quantSigma(rawVelocities)
+  speedDist <- velocityData[[1]]
+  speedDistWOStops <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
   #Accelerations
-  accelerations <- diff(speedData[[2]])
-  accelerationDist <- quantSigma(accelerations, returnVector = FALSE)
+  accelerationData <- quantSigma(diff(velocityData[[2]]), returnVector = TRUE)
+  accelerationsDist <- accelerationData[[1]]
   #Distances
   distances <- sqrt((diff(trip$x)^2) + (diff(trip$y)^2))
   distances[distances > mean(distances) + sd(distances) * 5] <- NA
@@ -82,12 +85,13 @@ transform2Percentiles <- function(file, driverID){
   #Angles
   anglesData <- angleVector(trip)
   turningAnglesDist <- anglesData[[1]]
-  #anglesPlusSpeedist <- anglesData[[2]] * speedData[[2]][-1] #this doesn't work on the 1004th driver trip number 11
-  #anglesPlusSpeedist <- anglesPlusSpeedist[!anglesPlusSpeedist > sd(anglesPlusSpeedist) * 5]
-  #anglesPlusSpeedist <- quantile(anglesPlusSpeedist, seq(0.05, 1, by=0.05))
+  anglesTimesSpeedDist <- quantSigma(anglesData[[2]] * rawVelocities[-1], returnVector = FALSE)
   
-  return(c(speedDist, accelerationDist, turningAnglesDist, 
-           sd(accelerations[accelerations > 0]), sd(accelerations[accelerations < 0]), distanceTrip, nrow(trip)))
+  return(c(speedDist, speedDistWOStops, accelerationsDist, turningAnglesDist, anglesTimesSpeedDist, 
+           ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0), 
+           ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0),            
+           ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0),  
+           distanceTrip, nrow(trip), sum(velocityData[[2]] == 0)))
 }
 
 #EDA----------------------------------------
@@ -208,7 +212,7 @@ driversPredictions <- lapply(drivers, function(driver){
   print(paste0("Driver number ", driver, " processed"))
   
   #Sample data from other drivers  
-  numberOfDrivers <- 2
+  numberOfDrivers <- 3
   initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers)
   ExtraDrivers <- sapply(initialDrivers, function(driver){
     results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
@@ -216,7 +220,7 @@ driversPredictions <- lapply(drivers, function(driver){
     return(results)
   })
   ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
-  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 50), ]
+  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 400), ]
   
   #LOF Algorithm
   lofDriver <- signif(-(lofactor(results, k=10)) + 10, digits = 4)
