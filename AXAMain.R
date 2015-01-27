@@ -220,7 +220,7 @@ driversPredictions <- lapply(drivers, function(driver){
     return(results)
   })
   ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
-  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 400), ]
+  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]
   
   #LOF Algorithm
   lofDriver <- signif(-(lofactor(results, k=10)) + 10, digits = 4)
@@ -389,6 +389,7 @@ if (SpotInstance == TRUE){
   driversPredictions <- lapply(driversOutput, function(driver){
     predictions <- fread(file.path(outputDirectory, driver), header = TRUE,
                          stringsAsFactors = FALSE)
+    print(paste0("Driver number ", driver, " read"))
     return(predictions)
   })
 }
@@ -396,67 +397,56 @@ if (SpotInstance == TRUE){
 #Concatenate lists into a data.frame
 driversPredictions <- do.call(rbind, driversPredictions)
 
-lofScore <- driversPredictions[, 1]
-lofRank <- driversPredictions[, 2]
-RFProb <- driversPredictions[, 3]
-RFRank <- driversPredictions[, 4]
-GBMProb <- driversPredictions[, 5]
-GBMRank <- driversPredictions[, 6]
-deepNNProb <- driversPredictions[, 7]
-deepNNRank <- driversPredictions[, 8]
-deepNNProb2 <- driversPredictions[, 9]
-deepNNRank2 <- driversPredictions[, 10]
-
 #Write .csv files-------------------------
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE,
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
 #Probabilities h2o.ai Deep NN
-submissionTemplate$prob <- signif(lofScore, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 1], digits = 4)
 write.csv(submissionTemplate, file = "lofScoreI.csv", row.names = FALSE)
 system('zip lofScoreI.zip lofScoreI.csv')
 
 #Probabilities h2o.ai Deep NN
-submissionTemplate$prob <- signif(lofRank, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 2], digits = 4)
 write.csv(submissionTemplate, file = "lofRankI.csv", row.names = FALSE)
 system('zip lofRankI.zip lofRankI.csv')
 
 #Probabilities h2o.ai RF
-submissionTemplate$prob <- signif(RFProb, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 3], digits = 4)
 write.csv(submissionTemplate, file = "RFProbI.csv", row.names = FALSE)
 system('zip RFProbI.zip RFProbI.csv')
 
 #Probabilities h2o.ai RF
-submissionTemplate$prob <- signif(RFRank, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 4)
 write.csv(submissionTemplate, file = "RFRankI.csv", row.names = FALSE)
 system('zip RFRankI.zip RFRankI.csv')
 
 #Probabilities h2o.ai GBM
-submissionTemplate$prob <- signif(GBMProb, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 5], digits = 4)
 write.csv(submissionTemplate, file = "GBMProbI.csv", row.names = FALSE)
 system('zip GBMProbI.zip GBMProbI.csv')
 
 #Probabilities h2o.ai GBM
-submissionTemplate$prob <- signif(GBMRank, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 6], digits = 4)
 write.csv(submissionTemplate, file = "GBMRankI.csv", row.names = FALSE)
 system('zip GBMRankI.zip GBMRankI.csv')
 
 #Probabilities h2o.ai Deep NN
-submissionTemplate$prob <- signif(deepNNProb, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 4)
 write.csv(submissionTemplate, file = "deepNNProbI.csv", row.names = FALSE)
 system('zip deepNNProbI.zip deepNNProbI.csv')
 
 #Probabilities h2o.ai Deep NN
-submissionTemplate$prob <- signif(deepNNRank, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 8], digits = 4)
 write.csv(submissionTemplate, file = "deepNNRankI.csv", row.names = FALSE)
 system('zip deepNNRankI.zip deepNNRankI.csv')
 
 #Probabilities h2o.ai Deep NN second best model
-submissionTemplate$prob <- signif(deepNNProb2, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 9], digits = 4)
 write.csv(submissionTemplate, file = "deepNNProb2I.csv", row.names = FALSE)
 system('zip deepNNProb2I.zip deepNNProb2I.csv')
 
 #Probabilities h2o.ai Deep NN second best model
-submissionTemplate$prob <- signif(deepNNRank2, digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 10], digits = 4)
 write.csv(submissionTemplate, file = "deepNNRank2I.csv", row.names = FALSE)
 system('zip deepNNRank2I.zip deepNNRank2I.csv')
