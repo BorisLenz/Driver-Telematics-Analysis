@@ -1,7 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8 # *IMPORTANT* Improved data mining (now it includes turning angle times speed), 
-#improved validation (5 fold x validation), more negative values from more drivers, 
-#and time in seconds stoped (velocity = 0).
+#Ver 0.8.1 # *IMPORTANT* No need to reinvent the wheel
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -11,6 +9,8 @@ require("data.table")
 require("parallel")
 require("h2o")
 require("DMwR")
+require("prospectr")
+require("adehabitatLT")
 require("ggplot2")
 #require("plotly")
 
@@ -36,11 +36,14 @@ source(paste0(workingDirectory, "pretrainh2oNN.R"))
 #Outlier Removal and transformation to quantiles
 quantSigma <- function(vector, sigma = 4, returnVector = TRUE){
   #n-sigma removal
+  vector <- vector[!vector < mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * (sigma + 1)]
   vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
+  smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, 11)
+  
   if (returnVector == TRUE){
-    return(list(quantile(vectorWithoutOutliers, seq(0.1, 1, by=0.1)), vectorWithoutOutliers))
+    return(list(quantile(smoothVectorWithoutOutliers, seq(0.1, 1, by=0.1)), smoothVectorWithoutOutliers))
   }else{
-    return(quantile(vectorWithoutOutliers, seq(0.1, 1, by=0.1)))    
+    return(quantile(smoothVectorWithoutOutliers, seq(0.1, 1, by=0.1)))    
   }
 }
 #Transform data to speed distributions
@@ -62,8 +65,8 @@ angleVector <- function(coordinatesAng){
   #set orthogonal values to zero
   angles[angles >= 89] <- 0  
   #Outliers removal
-  anglesWoOutliers <- quantSigma(angles, returnVector = FALSE)
-  return(list(anglesWoOutliers, rawAngles))
+  anglesWoOutliers <- quantSigma(angles, returnVector = TRUE)
+  return(list(anglesWoOutliers[[1]], rawAngles, anglesWoOutliers[[2]]))
 }
 #Define function to be passed as parallel
 transform2Percentiles <- function(file, driverID){
@@ -85,9 +88,13 @@ transform2Percentiles <- function(file, driverID){
   #Angles
   anglesData <- angleVector(trip)
   turningAnglesDist <- anglesData[[1]]
-  anglesTimesSpeedDist <- quantSigma(anglesData[[2]] * rawVelocities[-1], returnVector = FALSE)
+  turningAnglesSd <- sd(anglesData[[3]])  
+  anglesTimesSpeedData <- quantSigma(anglesData[[2]] * rawVelocities[-1], returnVector = TRUE)
+  anglesTimesSpeedDist <- anglesTimesSpeedData[[1]]
+  anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])
   
-  return(c(speedDist, speedDistWOStops, accelerationsDist, turningAnglesDist, anglesTimesSpeedDist, 
+  return(c(speedDist, speedDistWOStops, accelerationsDist, turningAnglesDist, turningAnglesSd, 
+           anglesTimesSpeedDist, anglesTimesSpeedSd,
            ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0), 
            ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0),            
            ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0),  
@@ -95,7 +102,61 @@ transform2Percentiles <- function(file, driverID){
 }
 
 #EDA----------------------------------------
-## EDA Pt. 1 Determine the minimal PCAs / number of neurons in the middle layer
+##EDA Pt. 1 Visualization of Trajectories
+driverViz <- sample(drivers, 1)
+results <- mclapply(seq(1, 200), function(file, driverID){
+  tripCoordinates <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
+  return(cbind(tripCoordinates, rep(file, nrow(tripCoordinates))))
+}, mc.cores = numCores, driverID = driverViz)
+print(paste0("Driver number: ", driverViz, " processed"))
+dataTableReady2Plot <- do.call(rbind, results)
+qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
+#py <- plotly()
+#py$ggplotly()
+
+##EDA Pt. 2 Visualization of Speeds with and without outlier replacement
+driverViz <- sample(drivers, 1)
+fileViz <- sample(1:200, 1)
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
+print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
+speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
+ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
+#Remove data above 5 sigmas (5 standard deviations)
+speed2Plot2 <- speed2Plot[!speed2Plot > mean(speed2Plot) + sd(speed2Plot) * 5]
+ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
+
+##EDA Pt. 3 Visualization of Turning Angles with and without outlier replacement
+driverViz <- sample(drivers, 1)
+fileViz <- sample(1:200, 1)
+tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
+print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
+dir <- as.data.table(cbind(diff(tripCoordinates$x), diff(tripCoordinates$y)))
+setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
+dir2 <- dir[2:nrow(dir)]
+dir1 <- dir[1:(nrow(dir) - 1)]
+angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
+ggplot(as.data.frame(angles), aes(x = angles)) + geom_density()
+#Remove data above 4 sigmas (4 standard deviations)
+#NAs removal
+anglesWoOutliers <- na.omit(angles)
+#Remove orthogonal values
+anglesWoOutliers[anglesWoOutliers >= 90] <- 0
+#Outliers Removal
+anglesWoOutliers <- anglesWoOutliers[!anglesWoOutliers > mean(anglesWoOutliers) + sd(anglesWoOutliers) * 4]
+ggplot(as.data.frame(anglesWoOutliers), aes(x = anglesWoOutliers)) + geom_density()
+
+##EDA Pt. 4 LOF Algorithm visualization
+driverViz <- sample(drivers, 1)
+results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driverViz))
+results <- scale(matrix(results, nrow = 200, byrow = TRUE))
+#Plot
+par(mfrow=c(1, 2))
+plot(density(lofactor(results, k=5)))
+biplot(prcomp(results), cex=.8)
+
+## EDA Pt. 5 Determine the minimal PCAs / number of neurons in the middle layer
 #Begin with a randomly selected driver to start the PCA calculation
 numberOfDrivers <- 100
 initialDrivers <- sample(drivers, numberOfDrivers)
@@ -119,59 +180,27 @@ plot(PCAModel@model$sdev)
 #ggplot(data.frame(X = PCAModel@model$sdev), aes(x = X)) + geom_density()
 h2o.shutdown(h2oServer, prompt = FALSE)
 
-##EDA Pt. 2 Visualization of Trajectories
-driverViz <- sample(drivers, 1)
-results <- mclapply(seq(1, 200), function(file, driverID){
-  tripCoordinates <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
-  return(cbind(tripCoordinates, rep(file, nrow(tripCoordinates))))
-}, mc.cores = numCores, driverID = driverViz)https://github.com/h2oai/h2o/blob/master/R/examples/Kaggle/CTR.R
-print(paste0("Driver number: ", driverViz, " processed"))
-dataTableReady2Plot <- do.call(rbind, results)
-qplot(x, y, data = dataTableReady2Plot, colour = V2, geom = "point")
-#py <- plotly()
-#py$ggplotly()
+## EDA Pt. 6 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
+#Begin creating a grid
+numberOfNegativeDrivers <- c(3, 5, 10, 30)
+numberOfNegativeColumns <- c(50, 100, 200, 500, 1000)
+set.seed(10014)
+#Parallel processing of each driver data
+results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
+results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
+print(paste0("Driver number ", driver, " processed"))
 
-##EDA Pt. 3 Visualization of Speeds with and without outlier replacement
-driverViz <- sample(drivers, 1)
-fileViz <- sample(1:200, 1)
-tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
-ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
-print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
-speed2Plot <- 3.6 * sqrt(diff(tripCoordinates$x)^2 + diff(tripCoordinates$y)^2)
-ggplot(as.data.frame(speed2Plot), aes(x = speed2Plot)) + geom_density()
-#Remove data above 5 sigmas (5 standard deviations)
-speed2Plot2 <- speed2Plot[!speed2Plot > mean(speed2Plot) + sd(speed2Plot) * 5]
-ggplot(as.data.frame(speed2Plot2), aes(x = speed2Plot2)) + geom_density()
+#Sample data from other drivers  
+numberOfDrivers <- 3
+initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers)
+ExtraDrivers <- sapply(initialDrivers, function(driver){
+  results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
+  print(paste0("Driver number: ", driver, " processed"))
+  return(results)
+})
+ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
+ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]
 
-##EDA Pt. 4 Visualization of Turning Angles with and without outlier replacement
-driverViz <- sample(drivers, 1)
-fileViz <- sample(1:200, 1)
-tripCoordinates <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
-ggplot(as.data.frame(tripCoordinates), aes(x = x, y = y)) + geom_point()
-print(paste0("Driver number: ", driverViz, " trip number ", fileViz, " processed"))
-dir <- as.data.table(cbind(diff(tripCoordinates$x), diff(tripCoordinates$y)))
-setnames(dir, old = c("V1", "V2"), new = c("x", "y"))
-dir2 <- dir[2:nrow(dir)]
-dir1 <- dir[1:(nrow(dir) - 1)]
-angles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^ 2) * rowSums(dir2 ^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
-ggplot(as.data.frame(angles), aes(x = angles)) + geom_density()
-#Remove data above 4 sigmas (4 standard deviations)
-#NAs removal
-anglesWoOutliers <- na.omit(angles)
-#Remove orthogonal values
-anglesWoOutliers[anglesWoOutliers >= 90] <- 0
-#Outliers Removal
-anglesWoOutliers <- anglesWoOutliers[!anglesWoOutliers > mean(anglesWoOutliers) + sd(anglesWoOutliers) * 4]
-ggplot(as.data.frame(anglesWoOutliers), aes(x = anglesWoOutliers)) + geom_density()
-
-##EDA Pt. 5 LOF Algorithm visualization
-driverViz <- sample(drivers, 1)
-results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driverViz))
-results <- scale(matrix(results, nrow = 200, byrow = TRUE))
-#Plot
-par(mfrow=c(1, 2))
-plot(density(lofactor(results, k=5)))
-biplot(prcomp(results), cex=.8)
 
 #Pre-Train Model using h2o.ai deeplearning
 
@@ -243,11 +272,18 @@ driversPredictions <- lapply(drivers, function(driver){
                                       data = h2oResultPlusExtras[randIdxs, ],
                                       nfolds = 5,
                                       classification = TRUE,
-                                      ntree = c(50, 75, 100),
-                                      depth = c(20, 40, 60), 
+                                      ntree = c(50, 75, 100, 150),
+                                      depth = c(20, 50, 75), 
                                       verbose = TRUE)
   
-  driverRFModel <- driverRFModelCV@model[[1]]
+  driverRFModel <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                    data = h2oResultPlusExtras[randIdxs, ],
+                                    classification = TRUE,
+                                    type = "BigData"
+                                    ntree = driverRFModelCV@model[[1]]@model$params$ntree,
+                                    depth = driverRFModelCV@model[[1]]@model$params$depth, 
+                                    verbose = TRUE)
+  
   print(driverRFModel)
   
   #probability Prediction of trips in Nth driver 
@@ -280,7 +316,7 @@ driversPredictions <- lapply(drivers, function(driver){
                              distribution = "bernoulli",
                              interaction.depth = driverGBMModelCV@model[[1]]@model$params$interaction.depth,
                              shrinkage = driverGBMModelCV@model[[1]]@model$params$shrinkage, 
-                             n.trees = 2000)  
+                             n.trees = 3000)  
   
   print(driverGBMModel)
   
@@ -311,13 +347,12 @@ driversPredictions <- lapply(drivers, function(driver){
                                           l2 = c(0, 1e-5),
                                           rho = c(0.95, 0.99),
                                           epsilon = c(1e-12, 1e-10, 1e-08),
-                                          hidden = c(70, 60, 70), 
-                                          epochs = 50)  
+                                          hidden = c(100, 100, 100, 100, 100), 
+                                          epochs = 60)  
   
-  #Pick the best 2 models and keep training them  
+  #Select the best 2 models and keep training them  
   driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                         data = h2oResultPlusExtras[randIdxs, ],   
-                                        nfolds = 5,
                                         classification = TRUE,
                                         #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
                                         activation = driverDeepNNModelCV@model[[1]]@model$params$activation,
@@ -327,12 +362,11 @@ driversPredictions <- lapply(drivers, function(driver){
                                         l2 = driverDeepNNModelCV@model[[1]]@model$params$l2,
                                         rho = driverDeepNNModelCV@model[[1]]@model$params$rho,
                                         epsilon = driverDeepNNModelCV@model[[1]]@model$params$epsilon,
-                                        hidden = c(70, 60, 70), 
-                                        epochs = 200)
+                                        hidden = cc(100, 100, 100, 100, 100), 
+                                        epochs = 500)
   
   driverDeepNNModel2 <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                          data = h2oResultPlusExtras[randIdxs, ],   
-                                         nfolds = 5,
                                          classification = TRUE,
                                          #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
                                          activation = driverDeepNNModelCV@model[[2]]@model$params$activation,
@@ -342,7 +376,7 @@ driversPredictions <- lapply(drivers, function(driver){
                                          l2 = driverDeepNNModelCV@model[[2]]@model$params$l2,
                                          rho = driverDeepNNModelCV@model[[2]]@model$params$rho,
                                          epsilon = driverDeepNNModelCV@model[[2]]@model$params$epsilon,
-                                         hidden = c(70, 60, 70), 
+                                         hidden = c(100, 100, 100, 100, 100), 
                                          epochs = 200)
   
   print(driverDeepNNModel)
