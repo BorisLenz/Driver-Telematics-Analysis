@@ -34,12 +34,12 @@ source(paste0(workingDirectory, "pretrainh2oNN.R"))
 
 #Data Mining (Functions)------------------------
 #Outlier Removal and transformation to quantiles
-quantSigma <- function(vector, sigma = 4, returnVector = TRUE){
+quantSigma <- function(vector, sigma = 5, returnVector = TRUE, movavWindow = 7){
   #n-sigma removal
-  vector <- vector[!vector < mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * (sigma + 1)]
+  #vector <- vector[!vector < mean(vector) - ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
-  smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, 11)
-  
+  smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, movavWindow)    
+    
   if (returnVector == TRUE){
     return(list(quantile(smoothVectorWithoutOutliers, seq(0.1, 1, by=0.1)), smoothVectorWithoutOutliers))
   }else{
@@ -69,36 +69,42 @@ angleVector <- function(coordinatesAng){
   return(list(anglesWoOutliers[[1]], rawAngles, anglesWoOutliers[[2]]))
 }
 #Define function to be passed as parallel
-transform2Percentiles <- function(file, driverID){
+transform2Percentiles <- function(file, driverID){  
   trip <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
   #Velocities
   rawVelocities <- velocitiesKH(trip)
   #n-sigma removal
   velocityData <- quantSigma(rawVelocities)
   speedDist <- velocityData[[1]]
+  #Velocitiy without stops
   speedDistWOStops <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
+  #Velocity without stops standard deviation
+  speedDistWOStopsSd <- ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0)
   #Accelerations
   accelerationData <- quantSigma(diff(velocityData[[2]]), returnVector = TRUE)
   accelerationsDist <- accelerationData[[1]]
+  #Accelerations Standard Deviations
+  positiveAccelerationSd <- ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0)
+  negativeAccelerationSd <- ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0)
   #Distances
   distances <- sqrt((diff(trip$x)^2) + (diff(trip$y)^2))
   distances[distances > mean(distances) + sd(distances) * 5] <- NA
   distances[is.na(distances)] <- mean(distances, na.rm = TRUE)
   distanceTrip <- sum(distances)
+  #Time spent stopping
+  timeStopped <- sum(velocityData[[2]] == 0)
   #Angles
   anglesData <- angleVector(trip)
   turningAnglesDist <- anglesData[[1]]
   turningAnglesSd <- sd(anglesData[[3]])  
+  #Angles times speed
   anglesTimesSpeedData <- quantSigma(anglesData[[2]] * rawVelocities[-1], returnVector = TRUE)
   anglesTimesSpeedDist <- anglesTimesSpeedData[[1]]
   anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])
   
   return(c(speedDist, speedDistWOStops, accelerationsDist, turningAnglesDist, turningAnglesSd, 
-           anglesTimesSpeedDist, anglesTimesSpeedSd,
-           ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0), 
-           ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0),            
-           ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0),  
-           distanceTrip, nrow(trip), sum(velocityData[[2]] == 0)))
+           anglesTimesSpeedDist, anglesTimesSpeedSd, speedDistWOStopsSd, positiveAccelerationSd,            
+           negativeAccelerationSd,  distanceTrip, nrow(trip), timeStopped))
 }
 
 #EDA----------------------------------------
@@ -182,26 +188,67 @@ h2o.shutdown(h2oServer, prompt = FALSE)
 
 ## EDA Pt. 6 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
 #Begin creating a grid
-numberOfNegativeDrivers <- c(3, 5, 10, 30)
-numberOfNegativeColumns <- c(50, 100, 200, 500, 1000)
 set.seed(10014)
-#Parallel processing of each driver data
-results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
-print(paste0("Driver number ", driver, " processed"))
+driverGridVal <- sample(drivers, 3)
+RFGrid <- expand.grid(.numberOfNegativeDrivers = c(1, 3, 5, 10, 30),
+                      .numberOfNegativeColumns = c(50, 100, 200, 500, 1000))
 
-#Sample data from other drivers  
-numberOfDrivers <- 3
-initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers)
-ExtraDrivers <- sapply(initialDrivers, function(driver){
-  results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  print(paste0("Driver number: ", driver, " processed"))
-  return(results)
+#Start h2o directly from R
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
+
+modelsGenerated <- apply(RFGrid, 1, function(driversSplit){  
+  errorNthDriver <- sapply(driverGridVal, function(nthDriver){
+    #Parallel processing of each driver data
+    results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = nthDriver))
+    results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
+    print(paste0("Driver number ", nthDriver, " processed"))
+    
+    #Sample data from other drivers  
+    numberOfDrivers <- as.numeric(driversSplit[1])
+    set.seed(10015)    
+    initialDrivers <- sample(drivers[!drivers %in% nthDriver], numberOfDrivers)
+    ExtraDrivers <- sapply(initialDrivers, function(extraDriver){
+      results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = extraDriver))
+      print(paste0("Driver number: ", extraDriver, " processed"))
+      return(results)
+    })
+    ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
+    set.seed(10016) 
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]
+    
+    #R matrix conversion to h2o object and stored in the server
+    h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
+                                                   signif(scale(rbind(results, ExtraDrivers)), digits = 4)))
+    h2oResultsNthDriver <- h2oResultPlusExtras[1:nrow(results), ]
+    print(h2o.ls(h2oServer))   
+    
+    #h2o.ai RF algorithm
+    #Shuffle indexes
+    #set.seed(1001001)
+    randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
+    #Cross Validation + Modelling
+    driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                        data = h2oResultPlusExtras[randIdxs, ],
+                                        nfolds = 5,
+                                        classification = TRUE,
+                                        ntree = c(50, 75, 100, 150),
+                                        depth = c(20, 50, 75), 
+                                        verbose = TRUE)
+    aucError <- driverRFModelCV@model[[1]]@model$auc
+    h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])       
+    return(aucError)
+  })
+  return(c(as.numeric(driversSplit), errorNthDriver))
 })
-ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
-ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]
+#h2o Shutdown
+h2o.shutdown(h2oServer, prompt = FALSE)
 
+modelsGenerated <- t(modelsGenerated)
 
+averageAUC <- apply(modelsGenerated[, c(-1, -2)], 1, mean)
+bestDriverNumbers <- which.max(averageAUC)
+driversParameters <- modelsGenerated[bestDriverNumbers, c(1, 2)]
+  
 #Pre-Train Model using h2o.ai deeplearning
 
 
@@ -266,7 +313,7 @@ driversPredictions <- lapply(drivers, function(driver){
   h2oResultsNthDriver <- h2oResultPlusExtras[1:nrow(results), ]
   print(h2o.ls(h2oServer))
   
-  #h2o.ai GBM algorithm
+  #h2o.ai RF algorithm
   #Cross Validation + Modelling
   driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                       data = h2oResultPlusExtras[randIdxs, ],
