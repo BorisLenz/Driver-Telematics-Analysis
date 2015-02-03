@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.1 # *IMPORTANT* No need to reinvent the wheel
+#Ver 0.8.2 # *IMPORTANT* No need to reinvent the wheel; angle features added (pk adehabitatLT)
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -11,6 +11,7 @@ require("h2o")
 require("DMwR")
 require("prospectr")
 require("adehabitatLT")
+require("geomorph")
 require("ggplot2")
 #require("plotly")
 
@@ -36,7 +37,7 @@ source(paste0(workingDirectory, "pretrainh2oNN.R"))
 #Outlier Removal and transformation to quantiles
 quantSigma <- function(vector, sigma = 5, returnVector = TRUE, movavWindow = 7){
   #n-sigma removal
-  #vector <- vector[!vector < mean(vector) - ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
+  vector <- vector[!vector < mean(vector) - ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, movavWindow)    
     
@@ -52,22 +53,22 @@ velocitiesKH <- function(coordinates){
   return(speed)
 }
 #Angles Mining with Angle Rotation
-angleVector <- function(coordinatesAng){
-  coorDT <- as.data.table(cbind(diff(coordinatesAng$x), diff(coordinatesAng$y)))
+#angleVector <- function(coordinatesAng){
+#  coorDT <- as.data.table(cbind(diff(coordinatesAng$x), diff(coordinatesAng$y)))
   #Returns the angles between vectors
   #coordinatesAng is a 2D-array of shape (N,M) representing N vectors in M-dimensional space.
   #It returns a vector which is a 1D-array of values of shape (N-1,), with each value between 0 and pi.
-  dir2 <- coorDT[2:nrow(coorDT)]
-  dir1 <- coorDT[1:(nrow(coorDT) - 1)]
-  rawAngles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^2) * rowSums(dir2^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
+#  dir2 <- coorDT[2:nrow(coorDT)]
+#  dir1 <- coorDT[1:(nrow(coorDT) - 1)]
+#  rawAngles <- acos(rowSums(dir1 * dir2) / ((sqrt(rowSums(dir1^2) * rowSums(dir2^2))) + 1e-06)) * (180/pi) #1e-06 is included to avoid a division by zero
   #NAs removal
-  angles <- na.omit(rawAngles)
+#  angles <- na.omit(rawAngles)
   #set orthogonal values to zero
-  angles[angles >= 89] <- 0  
+#  angles[angles >= 89] <- 0  
   #Outliers removal
-  anglesWoOutliers <- quantSigma(angles, returnVector = TRUE)
-  return(list(anglesWoOutliers[[1]], rawAngles, anglesWoOutliers[[2]]))
-}
+#  anglesWoOutliers <- quantSigma(angles, returnVector = TRUE)
+#  return(list(anglesWoOutliers[[1]], rawAngles, anglesWoOutliers[[2]]))
+#}
 #Define function to be passed as parallel
 transform2Percentiles <- function(file, driverID){  
   trip <- fread(file.path(driversDirectory, driverID, paste0(file, ".csv")))
@@ -77,7 +78,7 @@ transform2Percentiles <- function(file, driverID){
   velocityData <- quantSigma(rawVelocities)
   speedDist <- velocityData[[1]]
   #Velocitiy without stops
-  speedDistWOStops <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
+  speedDistWOStopsDist <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
   #Velocity without stops standard deviation
   speedDistWOStopsSd <- ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0)
   #Accelerations
@@ -86,25 +87,54 @@ transform2Percentiles <- function(file, driverID){
   #Accelerations Standard Deviations
   positiveAccelerationSd <- ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0)
   negativeAccelerationSd <- ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0)
+  #Time spent stopping
+  timeStopped <- sum(rawVelocities == 0)
+  
+  #Coordinates as ltraj object
+  tripLtraj <- as.ltraj(trip, id = rep(file, nrow(trip)), typeII = FALSE)
+  tripLtrajDf <- ld(tripLtraj)
   #Distances
-  distances <- sqrt((diff(trip$x)^2) + (diff(trip$y)^2))
+  distances <- na.omit(tripLtrajDf$dist)
+  #Distances outlier removal
   distances[distances > mean(distances) + sd(distances) * 5] <- NA
   distances[is.na(distances)] <- mean(distances, na.rm = TRUE)
   distanceTrip <- sum(distances)
-  #Time spent stopping
-  timeStopped <- sum(velocityData[[2]] == 0)
+  #partition the trajectory using the method of Lavielle
+  lav <- lavielle(tripLtraj, Lmin=2, Kmax=20)
+  chooseLav <- chooseseg(lav, draw = FALSE)
+  trajectoryPartitions <- tail(which(abs(chooseLav$D) > 0.70), 1)
+  #kk <- findpath(lav, trajectoryPartitions) #here for debugging purposes only
+  #plot(kk) #here for debugging purposes only
+
   #Angles
-  anglesData <- angleVector(trip)
-  turningAnglesDist <- anglesData[[1]]
-  turningAnglesSd <- sd(anglesData[[3]])  
+  #Using old arc cosine function
+  #anglesData <- angleVector(trip)
+  #turningAnglesDist <- anglesData[[1]]
+  #turningAnglesSd <- sd(anglesData[[3]])    
+  #Absolute angles using the adehabitatLT package
+  tripLtrajDf$abs.angle[is.na(tripLtrajDf$abs.angle)] <- 0
+  absAnglesDist <- quantSigma(tripLtrajDf$abs.angle, returnVector = FALSE)  
+  #Relative angles using the adehabitatLT package
+  tripLtrajDf$rel.angle[is.na(tripLtrajDf$rel.angle)] <- 0
+  relAnglesData <- quantSigma(tripLtrajDf$rel.angle, returnVector = TRUE)  
+  relAnglesDist <- relAnglesData[[1]]
+  relAnglesSd <- sd(relAnglesData[[2]])
+  relAnglesPositiveData <- quantSigma(abs(tripLtrajDf$rel.angle), returnVector = TRUE)   
+  relAnglesPositiveDist <- relAnglesPositiveData[[1]]
+  relAnglesPositiveSd <- sd(relAnglesPositiveData[[2]])
   #Angles times speed
-  anglesTimesSpeedData <- quantSigma(anglesData[[2]] * rawVelocities[-1], returnVector = TRUE)
+  anglesTimesSpeedData <- quantSigma(tripLtrajDf$rel.angle[c(-1, -(length(tripLtrajDf$rel.angle) - 1))] 
+                                     * rawVelocities[-1], returnVector = TRUE)
   anglesTimesSpeedDist <- anglesTimesSpeedData[[1]]
-  anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])
+  anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])  
+  #Generalized Procrustes analysis of points
+  #GPATrip <- gpagen(trip)
   
-  return(c(speedDist, speedDistWOStops, accelerationsDist, turningAnglesDist, turningAnglesSd, 
-           anglesTimesSpeedDist, anglesTimesSpeedSd, speedDistWOStopsSd, positiveAccelerationSd,            
-           negativeAccelerationSd,  distanceTrip, nrow(trip), timeStopped))
+  
+  return(c(speedDist, speedDistWOStopsDist, speedDistWOStopsSd, accelerationsDist, positiveAccelerationSd, 
+           negativeAccelerationSd, nrow(trip), timeStopped, distanceTrip, trajectoryPartitions,
+           absAnglesDist, relAnglesDist, relAnglesSd, relAnglesPositiveDist, relAnglesPositiveSd,
+           anglesTimesSpeedDist, anglesTimesSpeedSd))
 }
 
 #EDA----------------------------------------
@@ -387,7 +417,7 @@ driversPredictions <- lapply(drivers, function(driver){
                                           nfolds = 5,
                                           classification = TRUE,
                                           #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                          activation = "Tanh",
+                                          activation = c("Tanh", "TanhWithDropout"),
                                           input_dropout_ratio = c(0, 0.2),
                                           hidden_dropout_ratio = list(c(0, 0, 0), c(0.5, 0.5, 0.5)),
                                           l1 = c(0, 1e-5),
