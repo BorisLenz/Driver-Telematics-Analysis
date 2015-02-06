@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.2 # *IMPORTANT* No need to reinvent the wheel; angle features added (pk adehabitatLT)
+#Ver 0.8.3 # No need to reinvent the wheel; angles and angles times speed included bad data detection first try
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -77,6 +77,7 @@ transform2Percentiles <- function(file, driverID){
   #n-sigma removal
   velocityData <- quantSigma(rawVelocities)
   speedDist <- velocityData[[1]]
+  speedSd <- sd(velocityData[[2]])
   #Velocitiy without stops
   speedDistWOStopsDist <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
   #Velocity without stops standard deviation
@@ -93,6 +94,11 @@ transform2Percentiles <- function(file, driverID){
   #Coordinates as ltraj object
   tripLtraj <- as.ltraj(trip, id = rep(file, nrow(trip)), typeII = FALSE)
   tripLtrajDf <- ld(tripLtraj)
+  
+  #Bad Data Detector
+  badData <- ifelse(sum(is.na(tripLtrajDf$rel.angle)) / length(tripLtrajDf$rel.angle) > 0.65, 1, 0)
+  missingAngles <- sum(is.na(tripLtrajDf$rel.angle)) / length(tripLtrajDf$rel.angle) #debug only
+  
   #Distances
   distances <- na.omit(tripLtrajDf$dist)
   #Distances outlier removal
@@ -113,7 +119,13 @@ transform2Percentiles <- function(file, driverID){
   #turningAnglesSd <- sd(anglesData[[3]])    
   #Absolute angles using the adehabitatLT package
   tripLtrajDf$abs.angle[is.na(tripLtrajDf$abs.angle)] <- 0
-  absAnglesDist <- quantSigma(tripLtrajDf$abs.angle, returnVector = FALSE)  
+  absAnglesData <- quantSigma(tripLtrajDf$abs.angle, returnVector = TRUE)  
+  absAnglesDist <- absAnglesData[[1]]
+  absAnglesSd <- sd(absAnglesData[[2]])
+  absAnglesPositiveData <- quantSigma(abs(tripLtrajDf$abs.angle), returnVector = TRUE)   
+  absAnglesPositiveDist <- absAnglesPositiveData[[1]]
+  absAnglesPositiveSd <- sd(absAnglesPositiveData[[2]])
+  
   #Relative angles using the adehabitatLT package
   tripLtrajDf$rel.angle[is.na(tripLtrajDf$rel.angle)] <- 0
   relAnglesData <- quantSigma(tripLtrajDf$rel.angle, returnVector = TRUE)  
@@ -122,19 +134,29 @@ transform2Percentiles <- function(file, driverID){
   relAnglesPositiveData <- quantSigma(abs(tripLtrajDf$rel.angle), returnVector = TRUE)   
   relAnglesPositiveDist <- relAnglesPositiveData[[1]]
   relAnglesPositiveSd <- sd(relAnglesPositiveData[[2]])
-  #Angles times speed
+  
+  #Relative Angles times speed
   anglesTimesSpeedData <- quantSigma(tripLtrajDf$rel.angle[c(-1, -(length(tripLtrajDf$rel.angle) - 1))] 
                                      * rawVelocities[-1], returnVector = TRUE)
   anglesTimesSpeedDist <- anglesTimesSpeedData[[1]]
-  anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])  
-  #Generalized Procrustes analysis of points
+  anglesTimesSpeedSd <- sd(anglesTimesSpeedData[[2]])
+  
+  #Positive Relative Angles times speed
+  posAnglesTimesSpeedData <- quantSigma(abs(tripLtrajDf$rel.angle)[c(-1, -(length(tripLtrajDf$rel.angle) - 1))] 
+                                     * rawVelocities[-1], returnVector = TRUE)
+  posAnglesTimesSpeedDist <- posAnglesTimesSpeedData[[1]]
+  posAnglesTimesSpeedSd <- sd(posAnglesTimesSpeedData[[2]])
+  
+  #Generalized Procrustes analysis of points / shapes
   #GPATrip <- gpagen(trip)
   
   
-  return(c(speedDist, speedDistWOStopsDist, speedDistWOStopsSd, accelerationsDist, positiveAccelerationSd, 
+  return(c(speedDist, speedSd, speedDistWOStopsDist, speedDistWOStopsSd, accelerationsDist, positiveAccelerationSd, 
            negativeAccelerationSd, nrow(trip), timeStopped, distanceTrip, trajectoryPartitions,
-           absAnglesDist, relAnglesDist, relAnglesSd, relAnglesPositiveDist, relAnglesPositiveSd,
-           anglesTimesSpeedDist, anglesTimesSpeedSd))
+           absAnglesDist, absAnglesSd, absAnglesPositiveDist, absAnglesPositiveSd,
+           relAnglesDist, relAnglesSd, relAnglesPositiveDist, relAnglesPositiveSd,
+           anglesTimesSpeedDist, anglesTimesSpeedSd, posAnglesTimesSpeedDist, posAnglesTimesSpeedSd, 
+           badData, missingAngles))
 }
 
 #EDA----------------------------------------
@@ -356,7 +378,7 @@ driversPredictions <- lapply(drivers, function(driver){
   driverRFModel <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                     data = h2oResultPlusExtras[randIdxs, ],
                                     classification = TRUE,
-                                    type = "BigData"
+                                    type = "BigData",
                                     ntree = driverRFModelCV@model[[1]]@model$params$ntree,
                                     depth = driverRFModelCV@model[[1]]@model$params$depth, 
                                     verbose = TRUE)
