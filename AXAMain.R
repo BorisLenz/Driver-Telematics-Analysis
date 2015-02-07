@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.3 # No need to reinvent the wheel; angles and angles times speed included bad data detection first try
+#Ver 0.8.4 # No need to reinvent the wheel; second bad-data detector plus bad data rounding in predictions
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -11,7 +11,7 @@ require("h2o")
 require("DMwR")
 require("prospectr")
 require("adehabitatLT")
-require("geomorph")
+#require("geomorph")
 require("ggplot2")
 #require("plotly")
 
@@ -96,13 +96,15 @@ transform2Percentiles <- function(file, driverID){
   tripLtrajDf <- ld(tripLtraj)
   
   #Bad Data Detector
-  badData <- ifelse(sum(is.na(tripLtrajDf$rel.angle)) / length(tripLtrajDf$rel.angle) > 0.65, 1, 0)
-  missingAngles <- sum(is.na(tripLtrajDf$rel.angle)) / length(tripLtrajDf$rel.angle) #debug only
+  badData <- ifelse(sum(tripLtrajDf$dist > mean(tripLtrajDf$dist, na.rm=TRUE) 
+                        + sd(tripLtrajDf$dist, na.rm=TRUE) * 3.5, na.rm=TRUE) > 2, 1, 0)
+  hyperspeedJumps <- sum(tripLtrajDf$dist > mean(tripLtrajDf$dist, na.rm=TRUE) 
+                         + sd(tripLtrajDf$dist, na.rm=TRUE) * 3.5, na.rm=TRUE) #debug only
   
   #Distances
   distances <- na.omit(tripLtrajDf$dist)
   #Distances outlier removal
-  distances[distances > mean(distances) + sd(distances) * 5] <- NA
+  distances[distances > mean(distances) + sd(distances) * 4] <- NA
   distances[is.na(distances)] <- mean(distances, na.rm = TRUE)
   distanceTrip <- sum(distances)
   #partition the trajectory using the method of Lavielle
@@ -156,7 +158,8 @@ transform2Percentiles <- function(file, driverID){
            absAnglesDist, absAnglesSd, absAnglesPositiveDist, absAnglesPositiveSd,
            relAnglesDist, relAnglesSd, relAnglesPositiveDist, relAnglesPositiveSd,
            anglesTimesSpeedDist, anglesTimesSpeedSd, posAnglesTimesSpeedDist, posAnglesTimesSpeedSd, 
-           badData, missingAngles))
+           badData))
+           #hyperspeedJumps, badData)) #BAD DATA DEBUG ONLY
 }
 
 #EDA----------------------------------------
@@ -214,16 +217,54 @@ par(mfrow=c(1, 2))
 plot(density(lofactor(results, k=5)))
 biplot(prcomp(results), cex=.8)
 
-## EDA Pt. 5 Determine the minimal PCAs / number of neurons in the middle layer
+## EDA Pt. 5 Bad Data Detector
+driverViz <- sample(drivers, 1)
+fileViz <- sample(1:200, 1)
+#transformation to ltraj-like object
+df2ld <- function(tripdf){
+  return(ld(as.ltraj(tripdf, id = rep(1, nrow(tripdf)), typeII = FALSE)))
+}
+
+par(mfrow=c(2, 2))
+randTrip <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
+ltrajRand <- df2ld(randTrip)
+#Print amount of hyperspace jumps
+print(sum(ltrajRand$dist > mean(ltrajRand$dist, na.rm=TRUE) + sd(ltrajRand$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
+plot(randTrip)
+
+#Known bad data
+badTrip <- fread(file.path(driversDirectory, 1, paste0(53, ".csv")))
+ltrajBad <- df2ld(badTrip)
+#Print amount of hyperspace jumps
+print(sum(ltrajBad$dist > mean(ltrajBad$dist, na.rm=TRUE) + sd(ltrajBad$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
+plot(badTrip)
+
+#known split good data
+splitTrip <- fread(file.path(driversDirectory, 1, paste0(136, ".csv")))
+ltrajSplit <- df2ld(splitTrip)
+#Print amount of hyperspace jumps
+print(sum(ltrajSplit$dist > mean(ltrajSplit$dist, na.rm=TRUE) + sd(ltrajSplit$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
+plot(splitTrip)
+
+#good data with lots of stationary points
+stillTrip <- fread(file.path(driversDirectory, 1, paste0(179, ".csv")))
+ltrajStill <- df2ld(stillTrip)
+#Print amount of hyperspace jumps
+print(sum(ltrajStill$dist > mean(ltrajStill$dist, na.rm=TRUE) + sd(ltrajStill$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
+plot(stillTrip)
+
+## EDA Pt. 6 Determine the minimal PCAs / number of neurons in the middle layer
 #Begin with a randomly selected driver to start the PCA calculation
 numberOfDrivers <- 100
 initialDrivers <- sample(drivers, numberOfDrivers)
 driversProcessed <- sapply(initialDrivers, function(driver){
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   print(paste0("Driver number: ", driver, " processed"))
-  return(results)
+  return(results)  
 })
 driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE))
+#Bad Data Removal
+driversProcessed <- driversProcessed[!driversProcessed[, ncol(driversProcessed)] == 1, -ncol(driversProcessed)]
 
 #Init h2o Server
 #Start h2o directly from R
@@ -238,7 +279,7 @@ plot(PCAModel@model$sdev)
 #ggplot(data.frame(X = PCAModel@model$sdev), aes(x = X)) + geom_density()
 h2o.shutdown(h2oServer, prompt = FALSE)
 
-## EDA Pt. 6 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
+## EDA Pt. 7 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
 #Begin creating a grid
 set.seed(10014)
 driverGridVal <- sample(drivers, 3)
@@ -253,7 +294,9 @@ modelsGenerated <- apply(RFGrid, 1, function(driversSplit){
     #Parallel processing of each driver data
     results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = nthDriver))
     results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
-    print(paste0("Driver number ", nthDriver, " processed"))
+    print(paste0("Driver number ", nthDriver, " processed"))    
+    #Bad Data Removal
+    results <- results[!results[, ncol(results)] == 1, -ncol(results)]
     
     #Sample data from other drivers  
     numberOfDrivers <- as.numeric(driversSplit[1])
@@ -266,7 +309,9 @@ modelsGenerated <- apply(RFGrid, 1, function(driversSplit){
     })
     ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
     set.seed(10016) 
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]    
+    #Bad Data Removal
+    ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
     
     #R matrix conversion to h2o object and stored in the server
     h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
@@ -337,7 +382,10 @@ driversPredictions <- lapply(drivers, function(driver){
   #Parallel processing of each driver data
   results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
-  print(paste0("Driver number ", driver, " processed"))
+  print(paste0("Driver number ", driver, " processed"))  
+  #Bad Data Removal
+  idxBadData <- results[, ncol(results)] == 1
+  results <- results[!results[, ncol(results)] == 1, -ncol(results)]
   
   #Sample data from other drivers  
   numberOfDrivers <- 3
@@ -348,7 +396,9 @@ driversPredictions <- lapply(drivers, function(driver){
     return(results)
   })
   ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
-  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]
+  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]  
+  #Bad Data Removal
+  ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
   
   #LOF Algorithm
   lofDriver <- signif(-(lofactor(results, k=10)) + 10, digits = 4)
@@ -387,6 +437,8 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #probability Prediction of trips in Nth driver 
   predictionRF <- signif(as.data.frame(h2o.predict(driverRFModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
+  #Bad Data rounding up to one
+  predictionRF[idxBadData, 1] <- 1
   predictionRFRank <- rank(predictionRF[, 1])
   print(h2o.ls(h2oServer))
   
@@ -421,6 +473,8 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #probability Prediction of trips in Nth driver 
   predictionGBM <- signif(as.data.frame(h2o.predict(driverGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
+  #Bad Data rounding up to one
+  predictionGBM[idxBadData, 1] <- 1
   predictionGBMRank <- rank(predictionGBM[, 1])
   print(h2o.ls(h2oServer))
   
@@ -483,9 +537,13 @@ driversPredictions <- lapply(drivers, function(driver){
 
   #probability Predictions on all trips in Nth driver 
   predictionNN <- signif(as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
+  #Bad Data rounding up to one
+  predictionNN[idxBadData, 1] <- 1
   predictionNNRank <- rank(predictionNN[, 1])
   
   predictionNN2 <- signif(as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
+  #Bad Data rounding up to one
+  predictionNN2[idxBadData, 1] <- 1
   predictionNNRank2 <- rank(predictionNN2[, 1])
   print(h2o.ls(h2oServer))
   
