@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.4 # No need to reinvent the wheel; second bad-data detector plus bad data rounding in predictions
+#Ver 0.8.5 # *IMPORTANT* No need to reinvent the wheel; I probably reinvented the wheel, thrid bad-data detector; great improvement 
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -11,7 +11,6 @@ require("h2o")
 require("DMwR")
 require("prospectr")
 require("adehabitatLT")
-#require("geomorph")
 require("ggplot2")
 #require("plotly")
 
@@ -96,10 +95,8 @@ transform2Percentiles <- function(file, driverID){
   tripLtrajDf <- ld(tripLtraj)
   
   #Bad Data Detector
-  badData <- ifelse(sum(tripLtrajDf$dist > mean(tripLtrajDf$dist, na.rm=TRUE) 
-                        + sd(tripLtrajDf$dist, na.rm=TRUE) * 3.5, na.rm=TRUE) > 2, 1, 0)
-  hyperspeedJumps <- sum(tripLtrajDf$dist > mean(tripLtrajDf$dist, na.rm=TRUE) 
-                         + sd(tripLtrajDf$dist, na.rm=TRUE) * 3.5, na.rm=TRUE) #debug only
+  badData <- ifelse(speedSd < 5, 1, 0)
+  #rawDist <- quantile(rawVelocities, seq(0.1, 1, by=0.1)) #debug only
   
   #Distances
   distances <- na.omit(tripLtrajDf$dist)
@@ -159,7 +156,7 @@ transform2Percentiles <- function(file, driverID){
            relAnglesDist, relAnglesSd, relAnglesPositiveDist, relAnglesPositiveSd,
            anglesTimesSpeedDist, anglesTimesSpeedSd, posAnglesTimesSpeedDist, posAnglesTimesSpeedSd, 
            badData))
-           #hyperspeedJumps, badData)) #BAD DATA DEBUG ONLY
+           #badData, sd(rawVelocities), rawDist)) #BAD DATA DEBUG ONLY
 }
 
 #EDA----------------------------------------
@@ -220,38 +217,35 @@ biplot(prcomp(results), cex=.8)
 ## EDA Pt. 5 Bad Data Detector
 driverViz <- sample(drivers, 1)
 fileViz <- sample(1:200, 1)
-#transformation to ltraj-like object
-df2ld <- function(tripdf){
-  return(ld(as.ltraj(tripdf, id = rep(1, nrow(tripdf)), typeII = FALSE)))
+#Bad Data Detector
+is.badData <- function(theTrip){
+  #Velocities
+  rawVelocitiesT <- velocitiesKH(theTrip)
+  #n-sigma removal
+  velocityDataR <- quantSigma(rawVelocitiesT)
+  speedSdR <- ifelse(sd(velocityDataR[[2]]) < 5, 1, 0)
+  return(speedSdR)
 }
 
 par(mfrow=c(2, 2))
 randTrip <- fread(file.path(driversDirectory, driverViz, paste0(fileViz, ".csv")))
-ltrajRand <- df2ld(randTrip)
-#Print amount of hyperspace jumps
-print(sum(ltrajRand$dist > mean(ltrajRand$dist, na.rm=TRUE) + sd(ltrajRand$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
-plot(randTrip)
+print(is.badData(randTrip))
+plot(randTrip, main = "Random Trip")
 
 #Known bad data
 badTrip <- fread(file.path(driversDirectory, 1, paste0(53, ".csv")))
-ltrajBad <- df2ld(badTrip)
-#Print amount of hyperspace jumps
-print(sum(ltrajBad$dist > mean(ltrajBad$dist, na.rm=TRUE) + sd(ltrajBad$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
-plot(badTrip)
+print(is.badData(badTrip))
+plot(badTrip, main = "Bad Trip")
 
 #known split good data
 splitTrip <- fread(file.path(driversDirectory, 1, paste0(136, ".csv")))
-ltrajSplit <- df2ld(splitTrip)
-#Print amount of hyperspace jumps
-print(sum(ltrajSplit$dist > mean(ltrajSplit$dist, na.rm=TRUE) + sd(ltrajSplit$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
-plot(splitTrip)
+print(is.badData(splitTrip))
+plot(splitTrip, main = "Split Trip")
 
 #good data with lots of stationary points
 stillTrip <- fread(file.path(driversDirectory, 1, paste0(179, ".csv")))
-ltrajStill <- df2ld(stillTrip)
-#Print amount of hyperspace jumps
-print(sum(ltrajStill$dist > mean(ltrajStill$dist, na.rm=TRUE) + sd(ltrajStill$dist, na.rm=TRUE) * 3.5, na.rm=TRUE))
-plot(stillTrip)
+print(is.badData(stillTrip))
+plot(stillTrip, main = "Still Trip")
 
 ## EDA Pt. 6 Determine the minimal PCAs / number of neurons in the middle layer
 #Begin with a randomly selected driver to start the PCA calculation
@@ -262,9 +256,11 @@ driversProcessed <- sapply(initialDrivers, function(driver){
   print(paste0("Driver number: ", driver, " processed"))
   return(results)  
 })
-driversProcessed <- scale(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE))
+driversProcessed <- matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE)
 #Bad Data Removal
 driversProcessed <- driversProcessed[!driversProcessed[, ncol(driversProcessed)] == 1, -ncol(driversProcessed)]
+#Scale Data
+driversProcessed <- scale(driversProcessed)
 
 #Init h2o Server
 #Start h2o directly from R
