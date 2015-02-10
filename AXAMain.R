@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.6 #  Better EDA 7 + logs optimization parameters and errors of each model - driver; various changes in the training loop
+#Ver 0.8.7 #  debugged feature extraction loop
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -40,7 +40,10 @@ quantSigma <- function(vector, sigma = 5, returnVector = TRUE, movavWindow = 7){
   #n-sigma removal
   vector <- vector[!vector < mean(vector) - ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
-  smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, movavWindow)    
+  if (length(vectorWithoutOutliers) <= movavWindow){
+    vectorWithoutOutliers <- rep(0, movavWindow + 1)
+  }
+  smoothVectorWithoutOutliers <- movav(vectorWithoutOutliers, movavWindow)
     
   if (returnVector == TRUE){
     return(list(quantile(smoothVectorWithoutOutliers, seq(0.1, 1, by=0.1)), smoothVectorWithoutOutliers))
