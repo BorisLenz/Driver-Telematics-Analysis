@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.7 #  debugged feature extraction loop
+#Ver 0.8.8 #  debugged EDA #7
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -38,7 +38,9 @@ source(paste0(workingDirectory, "TrajectoryMatrixDistances.R"))
 #Outlier Removal and transformation to quantiles
 quantSigma <- function(vector, sigma = 5, returnVector = TRUE, movavWindow = 7){
   #n-sigma removal
+  #above n sigmas
   vector <- vector[!vector < mean(vector) - ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
+  #below n sigmas
   vectorWithoutOutliers <- vector[!vector > mean(vector) + ifelse(sum(vector > 0) > 1, sd(vector), 0) * sigma]
   if (length(vectorWithoutOutliers) <= movavWindow){
     vectorWithoutOutliers <- rep(0, movavWindow + 1)
@@ -83,9 +85,9 @@ transform2Percentiles <- function(file, driverID){
   speedDist <- velocityData[[1]]
   speedSd <- sd(velocityData[[2]])
   #Velocitiy without stops
-  speedDistWOStopsDist <- quantSigma(velocityData[[2]][velocityData[[2]] > 0], returnVector = FALSE)
+  speedDistWOStopsDist <- quantSigma(velocityData[[2]][velocityData[[2]] > 0.5], returnVector = FALSE)
   #Velocity without stops standard deviation
-  speedDistWOStopsSd <- ifelse(sum(velocityData[[2]] > 0) > 1, sd(velocityData[[2]][velocityData[[2]] > 0]), 0)
+  speedDistWOStopsSd <- ifelse(sum(velocityData[[2]] > 0.5) > 1, sd(velocityData[[2]][velocityData[[2]] > 0.5]), 0)
   #Accelerations
   accelerationData <- quantSigma(diff(velocityData[[2]]), returnVector = TRUE)
   accelerationsDist <- accelerationData[[1]]
@@ -93,7 +95,7 @@ transform2Percentiles <- function(file, driverID){
   positiveAccelerationSd <- ifelse(sum(accelerationData[[2]] > 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] > 0]), 0)
   negativeAccelerationSd <- ifelse(sum(accelerationData[[2]] < 0) > 1, sd(accelerationData[[2]][accelerationData[[2]] < 0]), 0)
   #Time spent stopping
-  timeStopped <- sum(rawVelocities == 0)
+  timeStopped <- sum(rawVelocities < 0.5)
   
   #Coordinates as ltraj object
   tripLtraj <- as.ltraj(trip, id = rep(file, nrow(trip)), typeII = FALSE)
@@ -110,7 +112,7 @@ transform2Percentiles <- function(file, driverID){
   distances[is.na(distances)] <- mean(distances, na.rm = TRUE)
   distanceTrip <- sum(distances)
   #partition the trajectory using the method of Lavielle
-  lav <- lavielle(tripLtraj, Lmin=2, Kmax=20)
+  lav <- lavielle(tripLtraj, Lmin = 2, Kmax = 20)
   chooseLav <- chooseseg(lav, draw = FALSE)
   trajectoryPartitions <- tail(which(abs(chooseLav$D) > 0.70), 1)
   #kk <- findpath(lav, trajectoryPartitions) #here for debugging purposes only
@@ -152,8 +154,7 @@ transform2Percentiles <- function(file, driverID){
   posAnglesTimesSpeedSd <- sd(posAnglesTimesSpeedData[[2]])
   
   #Generalized Procrustes analysis of points / shapes
-  #GPATrip <- gpagen(trip)
-  
+  #GPATrip <- gpagen(trip)  
   
   return(c(speedDist, speedSd, speedDistWOStopsDist, speedDistWOStopsSd, accelerationsDist, positiveAccelerationSd, 
            negativeAccelerationSd, nrow(trip), timeStopped, distanceTrip, trajectoryPartitions,
@@ -261,11 +262,11 @@ driversProcessed <- sapply(initialDrivers, function(driver){
   print(paste0("Driver number: ", driver, " processed"))
   return(results)  
 })
-driversProcessed <- matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE)
+driversProcessed <- signif(matrix(unlist(driversProcessed), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 4)
 #Bad Data Removal
 driversProcessed <- driversProcessed[!driversProcessed[, ncol(driversProcessed)] == 1, -ncol(driversProcessed)]
 #Scale Data
-driversProcessed <- scale(driversProcessed)
+#driversProcessed <- scale(driversProcessed)
 
 #Init h2o Server
 #Start h2o directly from R
@@ -283,10 +284,10 @@ h2o.shutdown(h2oServer, prompt = FALSE)
 ## EDA Pt. 7 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
 #Begin creating a grid
 set.seed(10014)
-driverGridVal <- sample(drivers, 3)
-RFGrid <- expand.grid(.numberOfNegativeDrivers = c(1, 3, 5, 10, 30),
-                      .numberOfNegativeRows = c(50, 100, 200, 400, 800, 1500, 3000))
-RFGrid <-  RFGrid[c(-11, -16, -21, -22, -26, -27, -28), ] #Remove row where sample is larger than the population when 'replace = FALSE' 
+driverGridVal <- sample(drivers, 15)
+RFGrid <- expand.grid(.numberOfNegativeDrivers = c(3, 5, 10, 30, 60),
+                      .numberOfNegativeRows = c(50, 200, 650, 1500, 3000))
+RFGrid <-  RFGrid[c(-11, -16, -17, -21, -22, -23), ] #Remove row where sample is larger than the population when 'replace = FALSE' 
 
 #Start h2o directly from R
 h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
@@ -294,32 +295,30 @@ h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
 modelsGenerated <- apply(RFGrid, 1, function(driversSplit){  
   errorNthDriver <- sapply(driverGridVal, function(nthDriver){
     #Parallel processing of each driver data
-    results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = nthDriver))
-    results <- signif(matrix(results, nrow = 200, byrow = TRUE), digits = 3)
-    print(paste0("Driver number ", nthDriver, " processed"))    
+    resultsFull <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = nthDriver))
+    resultsFull <- signif(matrix(resultsFull, nrow = 200, byrow = TRUE), digits = 3)
     #Bad Data Removal
-    results <- results[!results[, ncol(results)] == 1, -ncol(results)]
+    idxBadData <- resultsFull[, ncol(resultsFull)] == 1
+    results <- resultsFull[!resultsFull[, ncol(resultsFull)] == 1, -ncol(resultsFull)]
+    print(paste0("Driver number ", nthDriver, " processed"))  
     
     #Sample data from other drivers  
     numberOfDrivers <- as.numeric(driversSplit[1])
-    set.seed(10015)    
     initialDrivers <- sample(drivers[!drivers %in% nthDriver], numberOfDrivers)
-    ExtraDrivers <- sapply(initialDrivers, function(extraDriver){
-      results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = extraDriver))
-      print(paste0("Driver number: ", extraDriver, " processed"))
+    ExtraDrivers <- sapply(initialDrivers, function(driverExtra){
+      results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driverExtra))
+      print(paste0("Driver number: ", driverExtra, " processed"))
       return(results)
     })
     ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
-    set.seed(10016) 
-    #Extra drivers sampling    
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]    
-
+    #Extra drivers sampling
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]  
     
     #R matrix conversion to h2o object and stored in the server
     h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                   signif(rbind(results, ExtraDrivers)), digits = 4))
+                                                   signif(rbind(results, ExtraDrivers), digits = 4)))
     print(h2o.ls(h2oServer))   
     
     #h2o.ai RF algorithm
@@ -331,7 +330,7 @@ modelsGenerated <- apply(RFGrid, 1, function(driversSplit){
                                         data = h2oResultPlusExtras[randIdxs, ],
                                         nfolds = 5,
                                         classification = TRUE,
-                                        ntree = c(50, 75, 100, 150),
+                                        ntree = c(50, 75, 100),
                                         depth = c(20, 50, 75), 
                                         verbose = TRUE)
     aucError <- driverRFModelCV@model[[1]]@model$auc
