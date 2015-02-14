@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.8 #  debugged EDA #7
+#Ver 0.8.9 #  Reduced features and R data removal, server ready try 1
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -284,13 +284,13 @@ h2o.shutdown(h2oServer, prompt = FALSE)
 ## EDA Pt. 7 Determine the best number of drivers and trips per driver using random forests (fastest algorithm available)
 #Begin creating a grid
 set.seed(10014)
-driverGridVal <- sample(drivers, 15)
-RFGrid <- expand.grid(.numberOfNegativeDrivers = c(3, 5, 10, 30, 60),
-                      .numberOfNegativeRows = c(50, 200, 650, 1500, 3000))
-RFGrid <-  RFGrid[c(-11, -16, -17, -21, -22, -23), ] #Remove row where sample is larger than the population when 'replace = FALSE' 
+driverGridVal <- sample(drivers, 10)
+RFGrid <- expand.grid(.numberOfNegativeDrivers = c(3, 5, 10, 40),
+                      .numberOfNegativeRows = c(50, 200, 650, 1500))
+RFGrid <-  RFGrid[c(-9, -13, -14), ] #Remove row where sample is larger than the population when 'replace = FALSE' 
 
 #Start h2o directly from R
-h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "10g", nthreads = -1)
 
 modelsGenerated <- apply(RFGrid, 1, function(driversSplit){  
   errorNthDriver <- sapply(driverGridVal, function(nthDriver){
@@ -367,7 +367,7 @@ if (SpotInstance == TRUE){
 #h2oServer <- h2o.init(ip = "localhost", port = 54321, max_mem_size = '13g', startH2O = TRUE, nthreads = -1)
 
 #Start h2o from command line
-system(paste0("java -Xmx20G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
+system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
 #Connect R to h2o
 h2oServer <- h2o.init(ip = "localhost", port = 54333, nthreads = -1)  
 #checkpointModelKey <- ""
@@ -383,7 +383,7 @@ if ("deepNetPath" %in% ls()){
 driversPredictions <- lapply(drivers, function(driver){
   #Parallel processing of each driver data
   resultsFull <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
-  resultsFull <- signif(matrix(resultsFull, nrow = 200, byrow = TRUE), digits = 3)
+  resultsFull <- signif(matrix(resultsFull, nrow = 200, byrow = TRUE), digits = 4)
   #Bad Data Removal
   idxBadData <- resultsFull[, ncol(resultsFull)] == 1
   results <- resultsFull[!resultsFull[, ncol(resultsFull)] == 1, -ncol(resultsFull)]
@@ -397,11 +397,11 @@ driversPredictions <- lapply(drivers, function(driver){
     print(paste0("Driver number: ", driver, " processed"))
     return(results)
   })
-  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
+  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 4)
   #Bad Data Removal
   ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
   #Extra drivers sampling
-  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 100), ]  
+  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ]  
   
   #LOF Algorithm
   lofDriver <- signif(-(lofactor(resultsFull, k=10)) + 10, digits = 4)
@@ -521,18 +521,18 @@ driversPredictions <- lapply(drivers, function(driver){
   #Cross Validation 
   driverDeepNNModelCV <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                           data = h2oResultPlusExtras[randIdxs, ],   
-                                          nfolds = 5,
+                                          nfolds = 4,
                                           classification = TRUE,
                                           #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
                                           activation = c("Tanh", "TanhWithDropout"),
                                           input_dropout_ratio = c(0, 0.2),
-                                          hidden_dropout_ratio = list(c(0, 0, 0, 0, 0), c(0.5, 0.5, 0.5, 0.5, 0.5)),
+                                          hidden_dropout_ratio = list(c(0, 0, 0, 0), c(0.5, 0.5, 0.5, 0.5)),
                                           l1 = c(0, 1e-5),
                                           l2 = c(0, 1e-5),
                                           rho = c(0.95, 0.99),
                                           epsilon = c(1e-12, 1e-10, 1e-08),
-                                          hidden = c(100, 100, 100, 100, 100), 
-                                          epochs = 60)  
+                                          hidden = c(100, 100, 100, 100), 
+                                          epochs = 40)  
   #Log Info  
   aucNN <- driverDeepNNModelCV@model[[1]]@model$auc
   activationNN <- driverDeepNNModelCV@model[[1]]@model$params$activation
@@ -556,7 +556,7 @@ driversPredictions <- lapply(drivers, function(driver){
                                         l2 = driverDeepNNModelCV@model[[1]]@model$params$l2,
                                         rho = driverDeepNNModelCV@model[[1]]@model$params$rho,
                                         epsilon = driverDeepNNModelCV@model[[1]]@model$params$epsilon,
-                                        hidden = c(100, 100, 100, 100, 100), 
+                                        hidden = c(100, 100, 100, 100), 
                                         epochs = 250)
   
   driverDeepNNModel2 <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
@@ -570,7 +570,7 @@ driversPredictions <- lapply(drivers, function(driver){
                                          l2 = driverDeepNNModelCV@model[[2]]@model$params$l2,
                                          rho = driverDeepNNModelCV@model[[2]]@model$params$rho,
                                          epsilon = driverDeepNNModelCV@model[[2]]@model$params$epsilon,
-                                         hidden = c(100, 100, 100, 100, 100), 
+                                         hidden = c(100, 100, 100, 100), 
                                          epochs = 250)
   
   print(driverDeepNNModel)
@@ -595,6 +595,9 @@ driversPredictions <- lapply(drivers, function(driver){
   print(h2o.ls(h2oServer))  
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
   print(paste0("Driver number ", driver, " processed with Deep NNs"))  
+  
+  #Remove R Data
+  rm(resultsFull, results, ExtraDrivers)
   
   #Logging hyperparameters
   write.csv(cbind(aucRF, ntreeRF, depthRF,
