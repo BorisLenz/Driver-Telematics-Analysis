@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.8.9 #  Reduced features and R data removal, server ready try 1
+#Ver 0.8.10 # *IMPORTANT* Added deep encoders outlier detector for bad-data, lof algorithm now excludes bad data, GBM removed; deepNNs & RF multimodel added (TESTED)
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -84,6 +84,7 @@ transform2Percentiles <- function(file, driverID){
   velocityData <- quantSigma(rawVelocities)
   speedDist <- velocityData[[1]]
   speedSd <- sd(velocityData[[2]])
+  #speedMad <- mad(velocityData[[2]])
   #Velocitiy without stops
   speedDistWOStopsDist <- quantSigma(velocityData[[2]][velocityData[[2]] > 0.5], returnVector = FALSE)
   #Velocity without stops standard deviation
@@ -253,6 +254,43 @@ stillTrip <- fread(file.path(driversDirectory, 1, paste0(179, ".csv")))
 print(is.badData(stillTrip))
 plot(stillTrip, main = "Still Trip")
 
+#Start h2o directly from R
+h2oServer <- h2o.init(ip = "localhost", max_mem_size = "5g", nthreads = -1)
+#Parallel processing of te first driver
+resultsDriver1 <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = 1))
+resultsDriver1 <- signif(matrix(resultsDriver1, nrow = 200, byrow = TRUE), digits = 3)
+#Real bad data known for driver #1
+badDataDriver1Idxs <-  c(14, 21, 28, 39, 53, 55, 65, 90, 106, 114, 121, 123, 133, 146, 155, 159, 161, 169, 177, 186)
+#Rand indexes
+randIdxs <- sample(seq(1, nrow(resultsDriver1)), nrow(resultsDriver1))
+
+#R matrix conversion to h2o object and stored in the server
+h2oResultsDriver1 <- as.h2o(h2oServer, cbind(rbinom(length(randIdxs), 1, 0.5),
+                                             signif(resultsDriver1, digits = 4)))
+
+#Deep encoders outlier/bad data detection
+ae_model <- h2o.deeplearning(x = seq(2, ncol(h2oResultsDriver1) - 1), y = 1,
+                             data = h2oResultsDriver1,   
+                             autoencoder = TRUE, 
+                             fast_mode = TRUE,
+                             ignore_const_cols = FALSE,
+                             activation = "Rectifier",
+                             l1 = 0,
+                             l2 = 0,
+                             rho = 0.99,
+                             epsilon = 1e-10,
+                             hidden = c(200, 200), 
+                             epochs = 300)
+
+#Anomaly Detection
+test_rec_error <- as.data.frame(h2o.anomaly(h2oResultsDriver1, ae_model))
+#Check Deep Features
+test_features_deep <- h2o.deepfeatures(h2oResultsDriver1, ae_model, layer=1)
+summary(test_features_deep)
+
+#Shutdown Server
+h2o.shutdown(h2oServer, prompt = FALSE)
+
 ## EDA Pt. 6 Determine the minimal PCAs / number of neurons in the middle layer
 #Begin with a randomly selected driver to start the PCA calculation
 numberOfDrivers <- 100
@@ -332,7 +370,7 @@ modelsGenerated <- apply(RFGrid, 1, function(driversSplit){
                                         classification = TRUE,
                                         ntree = c(50, 75, 100),
                                         depth = c(20, 50, 75), 
-                                        verbose = TRUE)
+                                        verbose = FALSE)
     aucError <- driverRFModelCV@model[[1]]@model$auc
     h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])       
     return(aucError)
@@ -362,16 +400,8 @@ if (SpotInstance == TRUE){
                list.files(driversDirectory)[!(list.files(driversDirectory) %in% driversProcessed)])
 }
 
-#Init h2o Server
-#Start from R
-#h2oServer <- h2o.init(ip = "localhost", port = 54321, max_mem_size = '13g', startH2O = TRUE, nthreads = -1)
-
-#Start h2o from command line
-system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
-#Connect R to h2o
-h2oServer <- h2o.init(ip = "localhost", port = 54333, nthreads = -1)  
-#checkpointModelKey <- ""
-#checkpointModel <- ""
+checkpointModelKey <- ""
+checkpointModel <- ""
 
 if ("deepNetPath" %in% ls()){
   #Load pretrained model
@@ -381,6 +411,13 @@ if ("deepNetPath" %in% ls()){
 }
 
 driversPredictions <- lapply(drivers, function(driver){
+  #Start h2o from command line
+  system(paste0("java -Xmx10G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
+  #Small pause
+  Sys.sleep(3)
+  #Connect R to h2o
+  h2oServer <- h2o.init(ip = "localhost", port = 54333, nthreads = -1) 
+  
   #Parallel processing of each driver data
   resultsFull <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   resultsFull <- signif(matrix(resultsFull, nrow = 200, byrow = TRUE), digits = 4)
@@ -389,45 +426,61 @@ driversPredictions <- lapply(drivers, function(driver){
   results <- resultsFull[!resultsFull[, ncol(resultsFull)] == 1, -ncol(resultsFull)]
   print(paste0("Driver number ", driver, " processed"))  
     
+  #Define a number of repeated models with different driver's data
+  nModels <- 2
   #Sample data from other drivers  
-  numberOfDrivers <- 3
-  initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers)
-  ExtraDrivers <- sapply(initialDrivers, function(driver){
+  numberOfDrivers <- 3  
+  initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers * nModels)
+  negativeDrivers <- sapply(initialDrivers, function(driver){
     results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
     print(paste0("Driver number: ", driver, " processed"))
     return(results)
   })
-  ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 4)
-  #Bad Data Removal
-  ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
-  #Extra drivers sampling
-  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ]  
-  
+  allNegativeDrivers <- signif(matrix(unlist(negativeDrivers), nrow = numberOfDrivers * nModels * 200, byrow = TRUE), digits = 4)
+    
   #LOF Algorithm
-  lofDriver <- signif(-(lofactor(resultsFull, k=10)) + 10, digits = 4)
-  lofDriverRanking <- rank(lofDriver)
+  goodDataIdx <- which(resultsFull[, 105] == 0)
+  resultsLOF <- signif(-(lofactor(results, k=10)) + 10, digits = 4)
+  resultsLOFRank <- rank(resultsLOF)
+  lofDriver <- rep(max(resultsLOF), 200)
+  lofDriver[goodDataIdx] <- resultsLOF
+  lofDriverRanking <- rep(max(resultsLOFRank), 200)
+  lofDriverRanking[goodDataIdx] <- resultsLOFRank
   print(paste0("Driver number ", driver, " processed with the LOF Algorithm"))  
+  
+  #Create Indices for each extra drivers group
+  groupsIntegers <- unlist(lapply(1:nModels, function(n){
+    return(rep(n, 200 * numberOfDrivers))
+  }))
+  groupIndexes <- split(seq(1, nrow(allNegativeDrivers)), groupsIntegers)
+    
+  #Select respective group
+  ExtraDriversRandGroup <- allNegativeDrivers[groupIndexes[[1]], ]    
+  #Bad Data Removal
+  ExtraDriversRandGroup <- ExtraDriversRandGroup[!ExtraDriversRandGroup[, ncol(ExtraDriversRandGroup)] == 1, -ncol(ExtraDriversRandGroup)]
+  #Extra drivers sampling
+  ExtraDriversRandGroup <- ExtraDriversRandGroup[sample(seq(1, nrow(ExtraDriversRandGroup)), 200), ] 
   
   #Shuffle indexes
   #set.seed(1001001)
-  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
-  
+  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDriversRandGroup)), nrow(results) + nrow(ExtraDriversRandGroup))  
   #R matrix conversion to h2o object and stored in the server
-  h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                 signif(rbind(results, ExtraDrivers), digits = 4)))
+  h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDriversRandGroup))), 
+                                                 signif(rbind(results, ExtraDriversRandGroup), digits = 4)))
   h2oResultsNthDriver <- as.h2o(h2oServer, cbind(rep(1, nrow(resultsFull)),
                                                  signif(resultsFull[, -ncol(resultsFull)], digits = 4)))
   print(h2o.ls(h2oServer))
-  
+
   #h2o.ai RF algorithm
-  #Cross Validation + Modelling
+  #Cross Validation
   driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                       data = h2oResultPlusExtras[randIdxs, ],
                                       nfolds = 5,
                                       classification = TRUE,
-                                      ntree = c(50, 75, 100, 150),
+                                      ntree = c(50, 75, 100),
                                       depth = c(20, 50, 75), 
-                                      verbose = TRUE)
+                                      verbose = FALSE)
+  
   #Log Info
   aucRF <- driverRFModelCV@model[[1]]@model$auc
   ntreeRF <- driverRFModelCV@model[[1]]@model$params$ntree
@@ -435,85 +488,72 @@ driversPredictions <- lapply(drivers, function(driver){
   
   #Best Model
   bestCVRF <- driverRFModelCV@model[[1]]
-  
-  driverRFModel <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                    data = h2oResultPlusExtras[randIdxs, ],
-                                    classification = TRUE,
-                                    type = "BigData",
-                                    ntree = driverRFModelCV@model[[1]]@model$params$ntree,
-                                    depth = driverRFModelCV@model[[1]]@model$params$depth, 
-                                    verbose = TRUE)
-  
-  print(driverRFModel)
-  
-  #probability Prediction of trips in Nth driver 
-  predictionRF <- signif(as.data.frame(h2o.predict(driverRFModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
-  #Bad Data rounding up to one
-  predictionRF[idxBadData, 1] <- 1
-  predictionRFRank <- rank(predictionRF[, 1])
-  
+  #Cross validation model prediction
   predictionRFCV <- signif(as.data.frame(h2o.predict(bestCVRF, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
   #Bad Data rounding up to one
   predictionRFCV[idxBadData, 1] <- 1
   predictionRFCVRank <- rank(predictionRFCV[, 1])
-  
+
   print(h2o.ls(h2oServer))  
-  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
-  print(paste0("Driver number ", driver, " processed with RFs")) 
+  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])  
   
-  #h2o.ai GBM algorithm
+  #Random Forest Multi-Model Loop
+  randomForestPredictionsList <- lapply(1:nModels, function(modelNumber){
+    #Select respective group
+    ExtraDrivers <- allNegativeDrivers[groupIndexes[[modelNumber]], ]    
+    #Bad Data Removal
+    ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
+    #Extra drivers sampling
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ] 
+    
+    #Shuffle indexes
+    #set.seed(1001001)
+    randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
+    
+    #R matrix conversion to h2o object and stored in the server
+    h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
+                                                   signif(rbind(results, ExtraDrivers), digits = 4)))
+    h2oResultsNthDriver <- as.h2o(h2oServer, cbind(rep(1, nrow(resultsFull)),
+                                                   signif(resultsFull[, -ncol(resultsFull)], digits = 4)))
+    print(h2o.ls(h2oServer))
+    
+    #h2o.ai RF Modelling    
+    driverRFModel <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                      data = h2oResultPlusExtras[randIdxs, ],
+                                      classification = TRUE,
+                                      type = "BigData",
+                                      ntree = driverRFModelCV@model[[1]]@model$params$ntree,
+                                      depth = driverRFModelCV@model[[1]]@model$params$depth, 
+                                      verbose = FALSE)    
+    
+    #probability Prediction of trips in Nth driver 
+    predictionRFSingle <- signif(as.data.frame(h2o.predict(driverRFModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
+    #Bad Data rounding up to one
+    predictionRFSingle[idxBadData, 1] <- 1
+    predictionRFSingleRank <- rank(predictionRFSingle[, 1])
+    
+    print(h2o.ls(h2oServer))  
+    h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
+    print(paste0("Driver number ", driver, " processed with RFs")) 
+    
+    return(cbind(predictionRFSingle, predictionRFSingleRank))
+  })   
+  
+  randomForestPredictions <- matrix(rep(0, 400), c(200, 2))
+  for (i in 1:nModels){
+    randomForestPredictions <- randomForestPredictions + randomForestPredictionsList[[i]]
+  }
+  randomForestPredictionsMean <- randomForestPredictions / nModels
+  predictionRF <- randomForestPredictionsMean[, 1]
+  predictionRFRank <- randomForestPredictionsMean[, 2]
+
+  #h20.ai Deep Learning algorithm 
+  #Shuffle indexes
+  #set.seed(1001001)
+  randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDriversRandGroup)), nrow(results) + nrow(ExtraDriversRandGroup))  
   #R matrix conversion to h2o object and stored in the server
-  h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                 signif(rbind(results, ExtraDrivers), digits = 4)))
-  h2oResultsNthDriver <- as.h2o(h2oServer, cbind(rep(1, nrow(resultsFull)),
-                                                 signif(resultsFull[, -ncol(resultsFull)], digits = 4)))
-  print(h2o.ls(h2oServer))
-  
-  #Cross Validation
-  driverGBMModelCV <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                               data = h2oResultPlusExtras[randIdxs, ],
-                               nfolds = 5,
-                               distribution = "bernoulli",
-                               interaction.depth = c(2, 4, 7),
-                               shrinkage = c(0.001, 0.003), 
-                               n.trees = 150)
-  #Log Info  
-  aucGBM <- driverGBMModelCV@model[[1]]@model$auc
-  interaction.depthGBM <- driverGBMModelCV@model[[1]]@model$params$interaction.depth
-  shrinkageGBM <- driverGBMModelCV@model[[1]]@model$params$shrinkage
-  
-  #Best Model
-  bestCVGBM <- driverGBMModelCV@model[[1]]
-  
-  #Modelling
-  driverGBMModel <-  h2o.gbm(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                             data = h2oResultPlusExtras[randIdxs, ],
-                             distribution = "bernoulli",
-                             interaction.depth = driverGBMModelCV@model[[1]]@model$params$interaction.depth,
-                             shrinkage = driverGBMModelCV@model[[1]]@model$params$shrinkage, 
-                             n.trees = 3000)  
-  
-  print(driverGBMModel)
-  
-  #probability Prediction of trips in Nth driver 
-  predictionGBM <- signif(as.data.frame(h2o.predict(driverGBMModel, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
-  #Bad Data rounding up to one
-  predictionGBM[idxBadData, 1] <- 1
-  predictionGBMRank <- rank(predictionGBM[, 1])
-  
-  predictionGBMCV <- signif(as.data.frame(h2o.predict(bestCVGBM, newdata = h2oResultsNthDriver)[, 3]), digits = 4)
-  #Bad Data rounding up to one
-  predictionGBMCV[idxBadData, 1] <- 1
-  predictionGBMCVRank <- rank(predictionGBMCV[, 1])
-  
-  print(h2o.ls(h2oServer))  
-  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])     
-  print(paste0("Driver number ", driver, " processed with GBMs"))  
-  
-  #h20.ai deep learning algorithm 
-  #R matrix conversion to h2o object and stored in the server
-  h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                 signif(rbind(results, ExtraDrivers), digits = 4)))
+  h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDriversRandGroup))), 
+                                                 signif(rbind(results, ExtraDriversRandGroup), digits = 4)))
   h2oResultsNthDriver <- as.h2o(h2oServer, cbind(rep(1, nrow(resultsFull)),
                                                  signif(resultsFull[, -ncol(resultsFull)], digits = 4)))
   print(h2o.ls(h2oServer))
@@ -521,72 +561,34 @@ driversPredictions <- lapply(drivers, function(driver){
   #Cross Validation 
   driverDeepNNModelCV <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                           data = h2oResultPlusExtras[randIdxs, ],   
-                                          nfolds = 4,
+                                          nfolds = 3,
                                           classification = TRUE,
+                                          quiet_mode = TRUE,
+                                          fast_mode = TRUE,
                                           #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                          activation = c("Tanh", "TanhWithDropout"),
+                                          activation = "Rectifier",
                                           input_dropout_ratio = c(0, 0.2),
                                           hidden_dropout_ratio = list(c(0, 0, 0, 0), c(0.5, 0.5, 0.5, 0.5)),
-                                          l1 = c(0, 1e-5),
-                                          l2 = c(0, 1e-5),
+                                          l1 = 0,
+                                          l2 = 0,
                                           rho = c(0.95, 0.99),
-                                          epsilon = c(1e-12, 1e-10, 1e-08),
+                                          epsilon = c(1e-10, 1e-08),
                                           hidden = c(100, 100, 100, 100), 
-                                          epochs = 40)  
+                                          epochs = 25)  
   #Log Info  
   aucNN <- driverDeepNNModelCV@model[[1]]@model$auc
+  aucNN2 <- driverDeepNNModelCV@model[[2]]@model$auc  
   activationNN <- driverDeepNNModelCV@model[[1]]@model$params$activation
   l1NN <- driverDeepNNModelCV@model[[1]]@model$params$l1
   l2NN <- driverDeepNNModelCV@model[[1]]@model$params$l2
   rhoNN <- driverDeepNNModelCV@model[[1]]@model$params$rho
   epsilonNN <- driverDeepNNModelCV@model[[1]]@model$params$epsilon
+  idr <- driverDeepNNModelCV@model[[1]]@model$params$input_dropout_ratio
+  hdr <- driverDeepNNModelCV@model[[1]]@model$params$hidden_dropout_ratio
   
   #Best Model
   bestCVNN <- driverDeepNNModelCV@model[[1]]
-  
-  #Select the best 2 models and keep training them  
-  driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                        data = h2oResultPlusExtras[randIdxs, ],   
-                                        classification = TRUE,
-                                        #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                        activation = driverDeepNNModelCV@model[[1]]@model$params$activation,
-                                        input_dropout_ratio = driverDeepNNModelCV@model[[1]]@model$params$input_dropout_ratio,
-                                        hidden_dropout_ratio = driverDeepNNModelCV@model[[1]]@model$params$hidden_dropout_ratio,                                        
-                                        l1 = driverDeepNNModelCV@model[[1]]@model$params$l1,
-                                        l2 = driverDeepNNModelCV@model[[1]]@model$params$l2,
-                                        rho = driverDeepNNModelCV@model[[1]]@model$params$rho,
-                                        epsilon = driverDeepNNModelCV@model[[1]]@model$params$epsilon,
-                                        hidden = c(100, 100, 100, 100), 
-                                        epochs = 250)
-  
-  driverDeepNNModel2 <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                         data = h2oResultPlusExtras[randIdxs, ],   
-                                         classification = TRUE,
-                                         #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
-                                         activation = driverDeepNNModelCV@model[[2]]@model$params$activation,
-                                         input_dropout_ratio = driverDeepNNModelCV@model[[2]]@model$params$input_dropout_ratio,
-                                         hidden_dropout_ratio = driverDeepNNModelCV@model[[2]]@model$params$hidden_dropout_ratio,                                                                                 
-                                         l1 = driverDeepNNModelCV@model[[2]]@model$params$l1,
-                                         l2 = driverDeepNNModelCV@model[[2]]@model$params$l2,
-                                         rho = driverDeepNNModelCV@model[[2]]@model$params$rho,
-                                         epsilon = driverDeepNNModelCV@model[[2]]@model$params$epsilon,
-                                         hidden = c(100, 100, 100, 100), 
-                                         epochs = 250)
-  
-  print(driverDeepNNModel)
-  print(driverDeepNNModel2)
-
-  #probability Predictions on all trips in Nth driver 
-  predictionNN <- signif(as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
-  #Bad Data rounding up to one
-  predictionNN[idxBadData, 1] <- 1
-  predictionNNRank <- rank(predictionNN[, 1])
-  
-  predictionNN2 <- signif(as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
-  #Bad Data rounding up to one
-  predictionNN2[idxBadData, 1] <- 1
-  predictionNNRank2 <- rank(predictionNN2[, 1])
-  
+  #Cross validation model prediction  
   predictionNNCV <- signif(as.data.frame(h2o.predict(bestCVNN, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
   #Bad Data rounding up to one
   predictionNNCV[idxBadData, 1] <- 1
@@ -594,46 +596,121 @@ driversPredictions <- lapply(drivers, function(driver){
   
   print(h2o.ls(h2oServer))  
   h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
-  print(paste0("Driver number ", driver, " processed with Deep NNs"))  
+  
+  #Random Forest Multi-Model Loop with the two best hyperparameters
+  deepNNsPredictionsList <- lapply(1:nModels, function(modelNumber){
+    #Select respective group
+    ExtraDrivers <- allNegativeDrivers[groupIndexes[[modelNumber]], ]    
+    #Bad Data Removal
+    ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
+    #Extra drivers sampling
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ] 
+    
+    #Shuffle indexes
+    #set.seed(1001001)
+    randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
+    
+    #R matrix conversion to h2o object and stored in the server
+    h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
+                                                   signif(rbind(results, ExtraDrivers), digits = 4)))
+    h2oResultsNthDriver <- as.h2o(h2oServer, cbind(rep(1, nrow(resultsFull)),
+                                                   signif(resultsFull[, -ncol(resultsFull)], digits = 4)))
+    print(h2o.ls(h2oServer))
+    
+    #h2o.ai RF Modelling
+    #Best hyperparameters Model
+    driverDeepNNModel <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                          data = h2oResultPlusExtras[randIdxs, ],   
+                                          classification = TRUE,
+                                          quiet_mode = TRUE,                                        
+                                          #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
+                                          activation = driverDeepNNModelCV@model[[1]]@model$params$activation,
+                                          input_dropout_ratio = driverDeepNNModelCV@model[[1]]@model$params$input_dropout_ratio,
+                                          hidden_dropout_ratio = driverDeepNNModelCV@model[[1]]@model$params$hidden_dropout_ratio,                                        
+                                          l1 = driverDeepNNModelCV@model[[1]]@model$params$l1,
+                                          l2 = driverDeepNNModelCV@model[[1]]@model$params$l2,
+                                          rho = driverDeepNNModelCV@model[[1]]@model$params$rho,
+                                          epsilon = driverDeepNNModelCV@model[[1]]@model$params$epsilon,
+                                          hidden = c(100, 100, 100, 100), 
+                                          epochs = 300)
+    #Second Best hyperparameters Model
+    driverDeepNNModel2 <- h2o.deeplearning(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                           data = h2oResultPlusExtras[randIdxs, ],   
+                                           classification = TRUE,
+                                           quiet_mode = TRUE,                                         
+                                           #checkpoint = ifelse("deepNetPath" %in% ls(), checkpointModel, ""),
+                                           activation = driverDeepNNModelCV@model[[2]]@model$params$activation,
+                                           input_dropout_ratio = driverDeepNNModelCV@model[[2]]@model$params$input_dropout_ratio,
+                                           hidden_dropout_ratio = driverDeepNNModelCV@model[[2]]@model$params$hidden_dropout_ratio,                                                                                 
+                                           l1 = driverDeepNNModelCV@model[[2]]@model$params$l1,
+                                           l2 = driverDeepNNModelCV@model[[2]]@model$params$l2,
+                                           rho = driverDeepNNModelCV@model[[2]]@model$params$rho,
+                                           epsilon = driverDeepNNModelCV@model[[2]]@model$params$epsilon,
+                                           hidden = c(100, 100, 100, 100), 
+                                           epochs = 300)
+    
+    #probability Predictions on all trips in Nth driver 
+    predictionNNSingle <- signif(as.data.frame(h2o.predict(driverDeepNNModel, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
+    #Bad Data rounding up to one
+    predictionNNSingle[idxBadData, 1] <- 1
+    predictionNNSingleRank <- rank(predictionNNSingle[, 1])
+    
+    predictionNNSingle2 <- signif(as.data.frame(h2o.predict(driverDeepNNModel2, newdata = h2oResultsNthDriver)[, 3]), digits = 8)
+    #Bad Data rounding up to one
+    predictionNNSingle2[idxBadData, 1] <- 1
+    predictionNNSingleRank2 <- rank(predictionNNSingle2[, 1])
+    
+    print(h2o.ls(h2oServer))  
+    h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
+    print(paste0("Driver number ", driver, " processed with Deep NNs")) 
+    
+    return(cbind(predictionNNSingle, predictionNNSingleRank, predictionNNSingle2, predictionNNSingleRank2))
+  })
+  
+  deepNNsPredictions <- matrix(rep(0, 800), c(200, 4))
+  for (i in 1:nModels){
+    deepNNsPredictions <- deepNNsPredictions + deepNNsPredictionsList[[i]]
+  }
+  deepNNsPredictionsMean <- deepNNsPredictions / nModels
+  predictionNN <- deepNNsPredictionsMean[, 1]
+  predictionNNRank <- deepNNsPredictionsMean[, 2]
+  predictionNN2 <- deepNNsPredictionsMean[, 3]
+  predictionNNRank2 <- deepNNsPredictionsMean[, 4]  
   
   #Remove R Data
-  rm(resultsFull, results, ExtraDrivers)
+  rm(resultsFull, results, ExtraDriversRandGroup, allNegativeDrivers, negativeDrivers)
   
   #Logging hyperparameters
   write.csv(cbind(aucRF, ntreeRF, depthRF,
-                  aucGBM, interaction.depthGBM, shrinkageGBM,
-                  aucNN, activationNN, l1NN, l2NN, rhoNN, epsilonNN), 
+              aucNN, aucNN2, activationNN, l1NN, l2NN, rhoNN, epsilonNN, idr, hdr), 
             file = file.path(logsDirectory, paste0(driver, ".csv")), row.names = FALSE)
   
   #h2oObjects2Remove <- which(!h2o.ls(h2oServer)[, 1] %in% checkpointModelKey)
   #h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[h2oObjects2Remove, 1]) 
   print(paste0(which(list.files(driversDirectory) == driver), "/", length(list.files(driversDirectory))))
   
+  #Shutdown h20 instance
+  h2o.shutdown(h2oServer, prompt = FALSE)
+  
   if (SpotInstance == TRUE){
     write.csv(cbind(lofDriver, lofDriverRanking,
-                    predictionRF[, 1], predictionRFRank, 
-                    predictionGBM[, 1], predictionGBMRank, 
-                    predictionNN[, 1], predictionNNRank, 
-                    predictionNN2[, 1], predictionNNRank2, 
+                    predictionRF, predictionRFRank, 
+                    predictionNN, predictionNNRank, 
+                    predictionNN2, predictionNNRank2, 
                     predictionRFCV[, 1], predictionRFCVRank,
-                    predictionGBMCV[, 1], predictionGBMCVRank,
                     predictionNNCV[, 1], predictionNNCVRank), 
               file = file.path(outputDirectory, paste0(driver, ".csv")), row.names = FALSE)
     return(TRUE)
     
   }else{
     return(cbind(lofDriver, lofDriverRanking,
-                 predictionRF[, 1], predictionRFRank, 
-                 predictionGBM[, 1], predictionGBMRank, 
-                 predictionNN[, 1], predictionNNRank,
-                 predictionNN2[, 1], predictionNNRank2, 
+                 predictionRF, predictionRFRank, 
+                 predictionNN, predictionNNRank,
+                 predictionNN2, predictionNNRank2, 
                  predictionNNRF[, 1], predictionRFCVRank,
-                 predictionGBMCV[, 1], predictionGBMCVRank,
                  predictionNNCV[, 1], predictionNNCVRank))
   }  
 })
-#Shutdown h20 instance
-h2o.shutdown(h2oServer, prompt = FALSE)
 
 if (SpotInstance == TRUE){
   #List all possible drivers identities
@@ -673,16 +750,6 @@ submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 4)
 write.csv(submissionTemplate, file = "RFRankI.csv", row.names = FALSE)
 system('zip RFRankI.zip RFRankI.csv')
 
-#Probabilities h2o.ai GBM
-submissionTemplate$prob <- signif(driversPredictions[, 5], digits = 4)
-write.csv(submissionTemplate, file = "GBMProbI.csv", row.names = FALSE)
-system('zip GBMProbI.zip GBMProbI.csv')
-
-#Rank h2o.ai GBM
-submissionTemplate$prob <- signif(driversPredictions[, 6], digits = 4)
-write.csv(submissionTemplate, file = "GBMRankI.csv", row.names = FALSE)
-system('zip GBMRankI.zip GBMRankI.csv')
-
 #Probabilities h2o.ai Deep NN
 submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 4)
 write.csv(submissionTemplate, file = "deepNNProbI.csv", row.names = FALSE)
@@ -712,16 +779,6 @@ system('zip RFProbsCVI.zip RFProbsCVI.csv')
 submissionTemplate$prob <- signif(driversPredictions[, 12], digits = 4)
 write.csv(submissionTemplate, file = "RFRankCVI.csv", row.names = FALSE)
 system('zip RFRankCVI.zip RFRankCVI.csv')
-
-#Probabilities best GBM CV Model
-submissionTemplate$prob <- signif(driversPredictions[, 13], digits = 4)
-write.csv(submissionTemplate, file = "GBMProbsCVI.csv", row.names = FALSE)
-system('zip GBMProbsCVI.zip GBMProbsCVI.csv')
-
-#Rank best GBM CV Model
-submissionTemplate$prob <- signif(driversPredictions[, 14], digits = 4)
-write.csv(submissionTemplate, file = "GBMRankCVI.csv", row.names = FALSE)
-system('zip GBMRankCVI.zip GBMRankCVI.csv')
 
 #Probabilities best NN CV Model
 submissionTemplate$prob <- signif(driversPredictions[, 15], digits = 4)
