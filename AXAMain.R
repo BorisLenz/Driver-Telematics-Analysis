@@ -411,11 +411,13 @@ driversPredictions <- lapply(drivers, function(driver){
   resultsFull <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
   resultsFull <- signif(matrix(resultsFull, nrow = 200, byrow = TRUE), digits = 4)
   print(paste0("Driver number ", driver, " processed"))    
-    
+  
+  #Number of sampled trips
+  sampleTrips <- 300
   #Define a number of repeated models with different driver's data
-  nModels <- 4
+  nModels <- 2
   #Sample data from other drivers  
-  numberOfDrivers <- 4 
+  numberOfDrivers <- 2
   initialDrivers <- sample(drivers[!drivers %in% driver], numberOfDrivers * nModels)
   negativeDrivers <- sapply(initialDrivers, function(driver){
     results <- unlist(mclapply(seq(1, 200), transform2Percentiles, mc.cores = numCores, driverID = driver))
@@ -425,7 +427,7 @@ driversPredictions <- lapply(drivers, function(driver){
   allNegativeDrivers <- signif(matrix(unlist(negativeDrivers), nrow = numberOfDrivers * nModels * 200, byrow = TRUE), digits = 4)
   
   #Start h2o from command line
-  system(paste0("java -Xmx10G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
+  system(paste0("java -Xmx12G -jar ", h2o.jarLoc, " -port 54333 -name AXA &"))
   #Small pause
   Sys.sleep(3)
   #Connect R to h2o
@@ -462,7 +464,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #Bad Data Removal
   ExtraDriversRandGroup <- ExtraDriversRandGroup[!ExtraDriversRandGroup[, ncol(ExtraDriversRandGroup)] == 1, -ncol(ExtraDriversRandGroup)]
   #Extra drivers sampling
-  ExtraDriversRandGroup <- ExtraDriversRandGroup[sample(seq(1, nrow(ExtraDriversRandGroup)), 650), ] 
+  ExtraDriversRandGroup <- ExtraDriversRandGroup[sample(seq(1, nrow(ExtraDriversRandGroup)), sampleTrips), ] 
   
   #Shuffle indexes
   #set.seed(1001001)
@@ -478,7 +480,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #Cross Validation
   driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
                                       data = h2oResultPlusExtras[randIdxs, ],
-                                      nfolds = 5,
+                                      nfolds = 4,
                                       classification = TRUE,
                                       ntree = c(50, 75, 100),
                                       depth = c(20, 50, 75), 
@@ -507,7 +509,7 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
     #Extra drivers sampling
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), sampleTrips), ] 
     
     #Shuffle indexes
     #set.seed(1001001)
@@ -563,7 +565,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #  #Bad Data Removal
   #  ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
   #  #Extra drivers sampling
-  #  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
+  #  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), sampleTrips), ] 
   #  
   #  #Shuffle indexes
   #  #set.seed(1001001)
@@ -622,7 +624,7 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
     #Extra drivers sampling
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), sampleTrips), ] 
     
     #Shuffle indexes
     #set.seed(1001001)
