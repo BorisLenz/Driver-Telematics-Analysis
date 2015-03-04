@@ -310,9 +310,9 @@ h2o.shutdown(h2oServer, prompt = FALSE)
 #Begin creating a grid
 set.seed(10014)
 driverGridVal <- sample(drivers, 10)
-RFGrid <- expand.grid(.numberOfNegativeDrivers = c(3, 5, 10, 40),
+RFGrid <- expand.grid(.numberOfNegativeDrivers = c(4, 10, 25),
                       .numberOfNegativeRows = c(50, 200, 650, 1500))
-RFGrid <-  RFGrid[c(-9, -13, -14), ] #Remove row where sample is larger than the population when 'replace = FALSE' 
+RFGrid <-  RFGrid[-10, ] #Remove row where sample is larger than the population when 'replace = FALSE' 
 
 #Start h2o directly from R
 h2oServer <- h2o.init(ip = "localhost", max_mem_size = "10g", nthreads = -1)
@@ -338,29 +338,53 @@ modelsGenerated <- apply(RFGrid, 1, function(driversSplit){
     ExtraDrivers <- signif(matrix(unlist(ExtraDrivers), nrow = numberOfDrivers * 200, byrow = TRUE), digits = 3)
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
+    #Validation Drivers Sampling
+    ValDrivers <- ExtraDrivers[sample(1:nrow(ExtraDrivers), 7), ]
     #Extra drivers sampling
     ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), as.numeric(driversSplit[2])), ]  
     
     #R matrix conversion to h2o object and stored in the server
-    h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
-                                                   signif(rbind(results, ExtraDrivers), digits = 4)))
-    print(h2o.ls(h2oServer))   
+    #h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results)), rep(0, nrow(ExtraDrivers))), 
+    #                                               signif(rbind(results, ExtraDrivers), digits = 4)))
     
+    #R matrix conversion to h2o object and stored in the server
+    h2oResultPlusExtras <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results[1:100, ])), rep(0, nrow(ExtraDrivers))), 
+                                                   signif(rbind(results[1:100, ], ExtraDrivers), digits = 4)))
+    h2oValidation <- as.h2o(h2oServer, cbind(c(rep(1, nrow(results[101:nrow(results), ])), rep(0, nrow(ValDrivers))), 
+                                             signif(rbind(results[101:nrow(results), ], ValDrivers), digits = 4)))
+    
+    print(h2o.ls(h2oServer))  
+        
     #h2o.ai RF algorithm
     #Shuffle indexes
     #set.seed(1001001)
-    randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
+    #randIdxs <- sample(seq(1, nrow(results) + nrow(ExtraDrivers)), nrow(results) + nrow(ExtraDrivers))
     #Cross Validation + Modelling
-    driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
-                                        data = h2oResultPlusExtras[randIdxs, ],
-                                        nfolds = 5,
+    #driverRFModelCV <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+    #                                    data = h2oResultPlusExtras[randIdxs, ],
+    #                                    nfolds = 5,
+    #                                    classification = TRUE,
+    #                                    ntree = c(50, 75, 100),
+    #                                    depth = c(20, 50, 75), 
+    #                                    verbose = FALSE)
+    #aucError <- driverRFModelCV@model[[1]]@model$auc 
+    
+    randIdxs <- sample(seq(1, nrow(results[1:100, ]) + nrow(ExtraDrivers)), nrow(results[1:100, ]) + nrow(ExtraDrivers))
+    #Simple Validation train 60% data - test 40%
+    driverRFModelCV2 <- h2o.randomForest(x = seq(2, ncol(h2oResultPlusExtras)), y = 1,
+                                        data = h2oResultPlusExtras[randIdxs, ],                            
+                                        validation = h2oValidation,
                                         classification = TRUE,
                                         ntree = c(50, 75, 100),
                                         depth = c(20, 50, 75), 
                                         verbose = FALSE)
-    aucError <- driverRFModelCV@model[[1]]@model$auc
+    
+    aucError2 <- driverRFModelCV2@model[[1]]@model$auc
+    print(aucError2)
+    
     h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])       
-    return(aucError)
+    #return(aucError)
+    return(aucError2)
   })
   return(c(as.numeric(driversSplit), errorNthDriver))
 })
@@ -438,7 +462,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #Bad Data Removal
   ExtraDriversRandGroup <- ExtraDriversRandGroup[!ExtraDriversRandGroup[, ncol(ExtraDriversRandGroup)] == 1, -ncol(ExtraDriversRandGroup)]
   #Extra drivers sampling
-  ExtraDriversRandGroup <- ExtraDriversRandGroup[sample(seq(1, nrow(ExtraDriversRandGroup)), 200), ] 
+  ExtraDriversRandGroup <- ExtraDriversRandGroup[sample(seq(1, nrow(ExtraDriversRandGroup)), 650), ] 
   
   #Shuffle indexes
   #set.seed(1001001)
@@ -483,7 +507,7 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
     #Extra drivers sampling
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ] 
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
     
     #Shuffle indexes
     #set.seed(1001001)
@@ -510,16 +534,19 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data rounding up to one
     predictionRFSingle[idxBadData, 1] <- 1
     predictionRFSingleRank <- rank(predictionRFSingle[, 1])
+    #Bad Data rounding up to mean
+    predictionRFSingle2 <- predictionRFSingle
+    predictionRFSingle2[idxBadData, 1] <- mean(predictionRFSingle[!idxBadData, 1], na.rm = TRUE)
     
     print(h2o.ls(h2oServer))  
     h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
     print(paste0("Driver number ", driver, " processed with RFs")) 
     print(paste0("Model number ", modelNumber, " of ", nModels))
     
-    return(cbind(predictionRFSingle, predictionRFSingleRank))
+    return(cbind(predictionRFSingle, predictionRFSingleRank, predictionRFSingle2))
   })   
   
-  randomForestPredictions <- matrix(rep(0, 400), c(200, 2))
+  randomForestPredictions <- matrix(rep(0, 600), c(200, 3))
   for (i in 1:nModels){
     randomForestPredictions <- randomForestPredictions + randomForestPredictionsList[[i]]
   }
@@ -527,6 +554,7 @@ driversPredictions <- lapply(drivers, function(driver){
   predictionRF <- randomForestPredictionsMean[, 1]
   predictionRFRank <- randomForestPredictionsMean[, 2]
   predictionRFRankMean <- rank(predictionRF)
+  predictionRF2 <- randomForestPredictionsMean[, 3]
   
   #GBM Multi-Model Loop
   #gbmPredictionsList <- lapply(1:nModels, function(modelNumber){
@@ -535,7 +563,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #  #Bad Data Removal
   #  ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
   #  #Extra drivers sampling
-  #  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ] 
+  #  ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
   #  
   #  #Shuffle indexes
   #  #set.seed(1001001)
@@ -561,16 +589,19 @@ driversPredictions <- lapply(drivers, function(driver){
   #  #Bad Data rounding up to one
   #  predictionGBMSingle[idxBadData, 1] <- 1
   #  predictionGBMSingleRank <- rank(predictionGBMSingle[, 1])
+  #  #Bad Data rounding up to mean
+  #  predictionGBMSingle2 <- predictionGBMSingle
+  #  predictionGBMSingle2[idxBadData, 1] <- mean(predictionGBMSingle[!idxBadData, 1], na.rm = TRUE)
   #  
   #  print(h2o.ls(h2oServer))  
   #  h2o.rm(object = h2oServer, keys = h2o.ls(h2oServer)[, 1])   
   #  print(paste0("Driver number ", driver, " processed with RFs")) 
   #  print(paste0("Model number ", modelNumber, " of ", nModels))
   #  
-  #  return(cbind(predictionGBMSingle, predictionGBMSingleRank))
+  #  return(cbind(predictionGBMSingle, predictionGBMSingleRank, predictionGBMSingle2))
   #})   
   #
-  #gbmPredictions <- matrix(rep(0, 400), c(200, 2))
+  #gbmPredictions <- matrix(rep(0, 600), c(200, 3))
   #for (i in 1:nModels){
   #  gbmPredictions <- gbmPredictions + gbmPredictionsList[[i]]
   #}
@@ -578,6 +609,7 @@ driversPredictions <- lapply(drivers, function(driver){
   #predictionGBM <- gbmPredictionsMean[, 1]
   #predictionGBMRank <- gbmPredictionsMean[, 2]
   #predictionGBMRankMean <- rank(predictionGBM)
+  #predictionGBM2 <- gbmPredictionsMean[, 3]
   
   #Shutdown h20 instance
   h2o.shutdown(h2oServer, prompt = FALSE)
@@ -590,7 +622,7 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data Removal
     ExtraDrivers <- ExtraDrivers[!ExtraDrivers[, ncol(ExtraDrivers)] == 1, -ncol(ExtraDrivers)]
     #Extra drivers sampling
-    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 200), ] 
+    ExtraDrivers <- ExtraDrivers[sample(seq(1, nrow(ExtraDrivers)), 650), ] 
     
     #Shuffle indexes
     #set.seed(1001001)
@@ -611,15 +643,19 @@ driversPredictions <- lapply(drivers, function(driver){
     #Bad Data rounding up to one
     predictionGLMNETSingle[idxBadData, 1] <- 1
     predictionGLMNETRankSingle <- rank(predictionGLMNETSingle)
+    #Bad Data rounding up to mean
+    predictionGLMNETSingle2 <- predictionGLMNETSingle
+    predictionGLMNETSingle2[idxBadData, 1] <- mean(predictionGLMNETSingle[!idxBadData], na.rm = TRUE)
+    
     print(paste0("Driver number ", driver, " processed with GLMNETs")) 
     print(paste0("Model number ", modelNumber, " of ", nModels))
     
     rm(GLMNETModelCV, h2oResultsNthDriver, h2oResultPlusExtras)
     
-    return(cbind(predictionGLMNETSingle, predictionGLMNETRankSingle))
+    return(cbind(predictionGLMNETSingle, predictionGLMNETRankSingle, predictionGLMNETSingle2))
   })   
   
-  glmnetPredictions <- matrix(rep(0, 400), c(200, 2))
+  glmnetPredictions <- matrix(rep(0, 600), c(200, 3))
   for (i in 1:nModels){
     glmnetPredictions <- glmnetPredictions + glmnetPredictionsList[[i]]
   }
@@ -627,6 +663,7 @@ driversPredictions <- lapply(drivers, function(driver){
   predictionGLMNET <- glmnetPredictionsMean[, 1]
   predictionGLMNETRank <- glmnetPredictionsMean[, 2]
   predictionGLMNETRankMean <- rank(predictionGLMNET)
+  predictionGLMNET2 <- glmnetPredictionsMean[, 3]
 
   #Remove R Data
   rm(resultsFull, results, ExtraDriversRandGroup, allNegativeDrivers, negativeDrivers)
@@ -639,18 +676,18 @@ driversPredictions <- lapply(drivers, function(driver){
   
   if (SpotInstance == TRUE){
     write.csv(cbind(lofDriver, lofDriverRanking,
-                    predictionRF, predictionRFRank, predictionRFRankMean,
-                    #predictionGBM, predictionGBMRank, predictionGBMRankMean,
-                    predictionGLMNET, predictionGLMNETRank, predictionGLMNETRankMean,
+                    predictionRF, predictionRFRank, predictionRFRankMean, predictionRF2,
+                    #predictionGBM, predictionGBMRank, predictionGBMRankMean, predictionGBM2,
+                    predictionGLMNET, predictionGLMNETRank, predictionGLMNETRankMean, predictionGLMNET2,
                     predictionRFCV[, 1], predictionRFCVRank), 
               file = file.path(outputDirectory, paste0(driver, ".csv")), row.names = FALSE)
     return(TRUE)
     
   }else{
     return(cbind(lofDriver, lofDriverRanking,
-                 predictionRF, predictionRFRank, predictionRFRankMean,
-                 #predictionGBM, predictionGBMRank, predictionGBMRankMean,
-                 predictionGLMNET, predictionGLMNETRank, predictionGLMNETRankMean,                 
+                 predictionRF, predictionRFRank, predictionRFRankMean, predictionRF2,
+                 #predictionGBM, predictionGBMRank, predictionGBMRankMean, predictionGBM2,
+                 predictionGLMNET, predictionGLMNETRank, predictionGLMNETRankMean, predictionGLMNET2,
                  predictionRFCV[, 1], predictionRFCVRank))
   }  
 })
@@ -673,68 +710,83 @@ driversPredictions <- as.data.frame(do.call(rbind, driversPredictions))
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE,
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
 
-#Probabilities h2o.ai Deep NN
-submissionTemplate$prob <- signif(driversPredictions[, 1], digits = 4)
+#LOF Anomaly Score
+submissionTemplate$prob <- signif(driversPredictions[, 1], digits = 8)
 write.csv(submissionTemplate, file = "lofScoreIV.csv", row.names = FALSE)
 system('zip lofScoreIV.zip lofScoreIV.csv')
 
-#Rank h2o.ai Deep NN
-submissionTemplate$prob <- signif(driversPredictions[, 2], digits = 4)
+#LOF Anomaly Rank
+submissionTemplate$prob <- signif(driversPredictions[, 2], digits = 8)
 write.csv(submissionTemplate, file = "lofRankIV.csv", row.names = FALSE)
 system('zip lofRankIV.zip lofRankIV.csv')
 
 #Probabilities h2o.ai RF
-submissionTemplate$prob <- signif(driversPredictions[, 3], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 3], digits = 8)
 write.csv(submissionTemplate, file = "RFProbIV.csv", row.names = FALSE)
 system('zip RFProbIV.zip RFProbIV.csv')
 
 #Rank h2o.ai RF
-submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 8)
 write.csv(submissionTemplate, file = "RFRankIV.csv", row.names = FALSE)
 system('zip RFRankIV.zip RFRankIV.csv')
 
 #Rank of the mean h2o.ai RF
-submissionTemplate$prob <- signif(driversPredictions[, 5], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 5], digits = 8)
 write.csv(submissionTemplate, file = "RFRankMeanIV.csv", row.names = FALSE)
 system('zip RFRankMeanIV.zip RFRankMeanIV.csv')
 
+#Probabilities h2o.ai RF with mean replacement
+submissionTemplate$prob <- signif(driversPredictions[, 6], digits = 8)
+write.csv(submissionTemplate, file = "RFProb2IV.csv", row.names = FALSE)
+system('zip RFProb2IV.zip RFProb2IV.csv')
+
 #Probabilities h2o.ai GBM
-#submissionTemplate$prob <- signif(driversPredictions[, 6], digits = 4)
+#submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 8)
 #write.csv(submissionTemplate, file = "GBMProbIV.csv", row.names = FALSE)
 #system('zip GBMProbIV.zip GBMProbIV.csv')
 
 #Rank h2o.ai GBM
-#submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 4)
+#submissionTemplate$prob <- signif(driversPredictions[, 8], digits = 8)
 #write.csv(submissionTemplate, file = "GBMRankIV.csv", row.names = FALSE)
 #system('zip GBMRankIV.zip GBMRankIV.csv')
 
 #Rank h2o.ai GBM
-#submissionTemplate$prob <- signif(driversPredictions[, 8], digits = 4)
+#submissionTemplate$prob <- signif(driversPredictions[, 9], digits = 8)
 #write.csv(submissionTemplate, file = "GBMRankMeanIV.csv", row.names = FALSE)
 #system('zip GBMRankMeanIV.zip GBMRankMeanIV.csv')
 
+#Probabilities h2o.ai GBM with mean replacement
+# submissionTemplate$prob <- signif(driversPredictions[, 10], digits = 8)
+# write.csv(submissionTemplate, file = "GBMProb2IV.csv", row.names = FALSE)
+# system('zip GBMProb2IV.zip GBMProb2IV.csv')
+
 #Probabilities h2o.ai GLMNET
-submissionTemplate$prob <- signif(driversPredictions[, 6], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 8)
 write.csv(submissionTemplate, file = "GLMNETProbIV.csv", row.names = FALSE)
 system('zip GLMNETProbIV.zip GLMNETProbIV.csv')
 
 #Rank h2o.ai GLMNET
-submissionTemplate$prob <- signif(driversPredictions[, 7], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 8], digits = 8)
 write.csv(submissionTemplate, file = "GLMNETRankIV.csv", row.names = FALSE)
 system('zip GLMNETRankIV.zip GLMNETRankIV.csv')
 
 #Rank of the mean h2o.ai GLMNET
-submissionTemplate$prob <- signif(driversPredictions[, 8], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 9], digits = 8)
 write.csv(submissionTemplate, file = "GLMNETRankMeanIV.csv", row.names = FALSE)
 system('zip GLMNETRankMeanIV.zip GLMNETRankMeanIV.csv')
 
+#Probabilities h2o.ai RF with mean replacement
+submissionTemplate$prob <- signif(driversPredictions[, 10], digits = 8)
+write.csv(submissionTemplate, file = "GLMNETProb2IV.csv", row.names = FALSE)
+system('zip GLMNETProb2IV.zip GLMNETProb2IV.csv')
+
 #Probabilities h2o.ai best RF CV Model
-submissionTemplate$prob <- signif(driversPredictions[, 9], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 11], digits = 8)
 write.csv(submissionTemplate, file = "RFProbsCVIV.csv", row.names = FALSE)
 system('zip RFProbsCVIV.zip RFProbsCVIV.csv')
 
 #Rank h2o.ai best RF CV Model
-submissionTemplate$prob <- signif(driversPredictions[, 10], digits = 4)
+submissionTemplate$prob <- signif(driversPredictions[, 12], digits = 8)
 write.csv(submissionTemplate, file = "RFRankCVIV.csv", row.names = FALSE)
 system('zip RFRankCVIV.zip RFRankCVIV.csv')
 
