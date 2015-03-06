@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.9.2 # GLMNET predictions included, anomaly scores included
+#Ver 0.9.3 # Trajectory Matching First try
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
