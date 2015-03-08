@@ -1,4 +1,5 @@
 AutoencodersAnomalyDetection <- function(dataMatrix, nwServer){
+  
   #Required libraries
   require("h2o")
   
