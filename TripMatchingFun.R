@@ -9,10 +9,6 @@ TripMatchingFun <- function(driver, returnMatchedTrips = FALSE){
   require("maptools")
   require("rgeos")
   
-  #windows libraries
-  library(foreach)  
-  library(doParallel)  
-  
   realignFun <- function(tripNum, driverN){
     
     trip <- fread(file.path(driversDirectory, driverN, paste0(tripNum, ".csv")))

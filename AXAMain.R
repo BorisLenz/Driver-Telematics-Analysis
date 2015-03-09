@@ -16,22 +16,22 @@ require("adehabitatLT")
 require("ggplot2")
 #require("plotly")
 
-#Set Working Directory
-# workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/"
-# setwd(workingDirectory)
-# driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/drivers"
-# otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
-# outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
-# logsDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Logs"
-# vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
-# #h2o location
-# h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
-
-workingDirectory <- "D:/Wacax/Driver-Telematics-Analysis"
+Set Working Directory
+workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/"
 setwd(workingDirectory)
-driversDirectory <- "D:/Wacax/Driver-Telematics-Analysis/drivers"
-outputDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Output"
-logsDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Logs"
+driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/drivers"
+otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
+outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
+logsDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Logs"
+vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
+#h2o location
+h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
+
+# workingDirectory <- "D:/Wacax/Driver-Telematics-Analysis"
+# setwd(workingDirectory)
+# driversDirectory <- "D:/Wacax/Driver-Telematics-Analysis/drivers"
+# outputDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Output"
+# logsDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Logs"
 
 #List all possible drivers identities
 drivers <- list.files(driversDirectory)
@@ -41,6 +41,7 @@ numCores <- detectCores()
 #Extra Functions
 source(paste0(workingDirectory, "lofAnomalyDetection.R"))
 source(paste0(workingDirectory, "AutoencodersAnomalyDetection.R"))
+source(paste0(workingDirectory, "TripMatchingFun.R"))
 
 #Data Mining (Functions)------------------------
 #Outlier Removal and transformation to quantiles
