@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.9.4 # Trimming useless parts + tripmatching updated
+#Ver 0.9.5 # Updated score boosting with trajectories matching
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -17,15 +17,21 @@ require("ggplot2")
 #require("plotly")
 
 #Set Working Directory
-workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/"
+# workingDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/"
+# setwd(workingDirectory)
+# driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/drivers"
+# otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
+# outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
+# logsDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Logs"
+# vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
+# #h2o location
+# h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
+
+workingDirectory <- "D:/Wacax/Driver-Telematics-Analysis"
 setwd(workingDirectory)
-driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/drivers"
-otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
-outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
-logsDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Logs"
-vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
-#h2o location
-h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
+driversDirectory <- "D:/Wacax/Driver-Telematics-Analysis/drivers"
+outputDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Output"
+logsDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Logs"
 
 #List all possible drivers identities
 drivers <- list.files(driversDirectory)
@@ -613,6 +619,17 @@ if (SpotInstance == TRUE){
 #Concatenate lists into a data.frame
 driversPredictions <- as.data.frame(do.call(rbind, driversPredictions))
 
+#Run a trip matching algorithm
+matchedTripsAllDrivers <- sapply(drivers, TripMatchingFun)
+
+#Boost Best Predictions
+bestBoostedPredictions <- driversPredictions[, 3]
+bestPredictionsIdxs <- which(driversPredictions[matchedTripsAllDrivers, 3] > 0.8)
+bestBoostedPredictions[matchedTripsAllDrivers[bestPredictionsIdxs]] <- 1 
+
+#Boost All Predictions
+driversPredictions[matchedTripsAllDrivers, ] <- 1
+
 #Write .csv files-------------------------
 submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"), header = TRUE,
                             stringsAsFactors = FALSE, colClasses = c("character", "numeric"))
@@ -636,4 +653,9 @@ system('zip RFProbIII.zip RFProbIII.csv')
 #submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 8)
 #write.csv(submissionTemplate, file = "GBMProbIV.csv", row.names = FALSE)
 #system('zip GBMProbIV.zip GBMProbIV.csv')
+
+#Probabilities h2o.ai RF + boosted predictions with trajectory matching
+submissionTemplate$prob <- signif(bestBoostedPredictions, digits = 8)
+write.csv(submissionTemplate, file = "RFProbBoostIII.csv", row.names = FALSE)
+system('zip RFProbBoostIII.zip RFProbBoostIII.csv')
 
