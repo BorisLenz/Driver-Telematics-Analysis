@@ -9,108 +9,69 @@ TripMatchingFun <- function(driver, returnMatchedTrips = FALSE){
   require("maptools")
   require("rgeos")
   
+  #Rotate trajectories so that the first and last points are aligned with the x axis
   realignFun <- function(tripNum, driverN){
     
     trip <- fread(file.path(driversDirectory, driverN, paste0(tripNum, ".csv")))
     coordinatesDf <- as.data.frame(trip)
     lastPoint <- coordinatesDf[nrow(coordinatesDf), ]     
-    coordinates(coordinatesDf) <- ~x+y
-    originCoordinates <- elide(coordinatesDf, rotate = atan2(lastPoint$y, lastPoint$x) * (180/pi), center = c(0, 0))
+    coordinatesSp <- SpatialPoints(coordinatesDf)
+    originCoordinates <- elide(coordinatesSp, rotate = atan2(lastPoint$y, lastPoint$x) * (180/pi), center = c(0, 0))
     
     return(originCoordinates)
   }
   
-  realignedTrajectories <- mclapply(seq(1, 200), realignFun, mc.cores = numCores, driverN = driver)
-    
   TrajectoryParams <- function(xyTrip){
     #This function calculates: max, min, which.max, which.min of x and y parameters
-    maxX <- max(xyTrip$x)
-    minX <- min(xyTrip$x)
-    maxXIdx <- which.max(xyTrip$x)
-    minXIdx <- which.min(xyTrip$x)
-    maxY <- max(xyTrip$y)
-    minY <- min(xyTrip$y)
-    maxYIdx <- which.max(xyTrip$y)
-    minYIdx <- which.min(xyTrip$y)
+    maxX <- max(coordinates(xyTrip)[, 1])
+    minX <- min(coordinates(xyTrip)[, 1])
+    maxXIdx <- which.max(coordinates(xyTrip)[, 1])
+    minXIdx <- which.min(coordinates(xyTrip)[, 1])
+    maxY <- max(coordinates(xyTrip)[, 2])
+    minY <- min(coordinates(xyTrip)[, 2])    
+    maxYIdx <- which.max(coordinates(xyTrip)[, 2])
+    minYIdx <- which.min(coordinates(xyTrip)[, 2])    
+    length <- length(coordinates(xyTrip))
+    return(c(maxX, minX, maxY, minY, maxXIdx, minXIdx, maxYIdx, minYIdx, length))
+  }
+    
+  realignedTrajectories <- mclapply(seq(1, 200), realignFun, mc.cores = numCores, driverN = driver)
+  realignedTrajectoriesFactors <- lapply(realignedTrajectories, TrajectoryParams)
+  
+  #Reflect realigned trajectories
+  ReflectTrajectories <- function(tripNum){
+    realignedDf <- as.data.frame(realignedTrajectories[[tripNum]])
+    realignedDf$y <- realignedDf$y * -1
+    realignedSp <- SpatialPoints(realignedDf)
+    return(realignedSp)
   }
   
-  #Similarity Measuring
-  are.similar <- function(numeric1, numeric2, threshold){        
-    #this function calculates if two parameters are close to one another         
-    if(numeric1 > numeric2 - (numeric2 * threshold) &
-         numeric1 < numeric2 + (numeric2 * threshold)){
-      return(TRUE)
-    }else{
-      return(FALSE)
-    }
-  }
+  reflectedTrajectories <- mclapply(seq(1, 200), ReflectTrajectories, mc.cores = numCores)
+  reflectedTrajectoriesFactors <- lapply(reflectedTrajectories, TrajectoryParams)
   
-  #Matching Function
-  MatchingFun <- function(factors1, factors2){
-    factorsDf <- as.data.frame(cbind(factors1, factors2, c(100, 100, 10, 10, 100, 100, 10, 10)))
-    similarValues <- apply(factorsDf, 1, are.similar)
-    if(sum(similarValues) == 8){
-      return(TRUE)
-    }else{
-      return(FALSE)
-    }
-  }    
+  #Trajectory Differences Calculation
+  tripsMatched <- lapply(seq(1, 200), function(idx){
+    selfDifferences <- abs(realignedTrajectoriesFactors[[idx]] - as.data.frame(realignedTrajectoriesFactors))
+    selfDifferencesIdx <- selfDifferences < 80
+    matchedSelfIdx <- which(colSums(selfDifferencesIdx) >= 8)
+    matchedSelfIdx <- matchedSelfIdx[matchedSelfIdx != idx]
+    reflectedDifferences <- abs(realignedTrajectoriesFactors[[idx]] - as.data.frame(reflectedTrajectoriesFactors))    
+    reflectedDifferencesIdx <- reflectedDifferences < 80
+    matchedReflectedIdx <- which(colSums(reflectedDifferencesIdx) >= 8)
+    return(c(matchedSelfIdx, matchedReflectedIdx))
+    })      
   
-  calculateFactors <- function(tripNu, tripToBeMatched){
-    #calculate mins and maxs of centered and rotated trajetories
-    #Mins and Maxs Original Trajectory
-    trip2MatchFactors <- TrajectoryParams(tripToBeMatched)
-    
-    #Other Original Trajectories
-    nthTrip <- realignedTrajectories[[tripNu]]  
-    #Mins and Maxs 
-    nthTripFactors <- TrajectoryParams(nthTrip)
-    
-    #Reflected trajetories
-    reflectedTrip1 <- elide(nthTrip, reflect = c(FALSE, TRUE), center = c(0, 0))    
-    #Mins and Maxs
-    reflectedTrip1Factors <- TrajectoryParams(reflectedTrip1)
-    
-    reflectedTrip2 <- elide(nthTrip, reflect = c(TRUE, FALSE), center = c(0, 0))    
-    #Mins and Maxs
-    reflectedTrip2Factors <- TrajectoryParams(reflectedTrip2)
-    
-    reflectedTrip3 <- elide(nthTrip, reflect = c(TRUE, TRUE), center = c(0, 0))    
-    #Mins and Maxs
-    reflectedTrip3Factors <- TrajectoryParams(reflectedTrip3)         
-    
-    #Determine whether there is a matching trajectory or not (return a true or false statement)    
-    if (MatchingFun(trip2MatchFactors, reflectedTrip1Factors) == TRUE |
-          MatchingFun(trip2MatchFactors, reflectedTrip1Factors) == TRUE |
-          MatchingFun(trip2MatchFactors, reflectedTrip2Factors) == TRUE |
-          MatchingFun(trip2MatchFactors, reflectedTrip3Factors) == TRUE){
-      return(TRUE)
-    }else{
-      return(FALSE) 
-    }
-  }
+  numberTripsMatched <- sapply(tripsMatched, length)
+  repeatedTrips <- as.data.frame(numberTripsMatched > 0)
+  rownames(repeatedTrips) <- as.character(paste0(driver, "_", seq(1, 200)))
+  colnames(repeatedTrips) <- "RepeatedTrip"
   
-  #Return matched trips
-  tripsMatched <- lapply(1:200, function(tripNumber){
-    matches <- mclapply(seq(1, 200), calculateFactors, mc.cores = numCores,
-                        tripToBeMatched = realignedTrajectories[[tripNumber]])
-    if (returnMatchedTrips == FALSE){
-      if(sum(matches > 0)){
-        return(TRUE) 
-      }else{
-        return(FALSE)
-      }           
-    }else{
-      if(sum(matches > 0)){
-        return(list(TRUE, which(matches)))   #here for debugging only 
-      }else{
-        return(FALSE)
-      }      
-    }    
-  })  
-  
+  #Write as .csv
+  write.csv(repeatedTrips, file = file.path(tripMatchingDir, paste0(driver, ".csv")), row.names = TRUE)
+  #Report progress
+  print(paste0(which(list.files(driversDirectory) == driver), "/", length(list.files(driversDirectory))))  
+    
   #Give an ID to the trips matched (They are the same as th submission file)
-  names(tripsMatched) <- as.character(paste0(driver, seq(1, 200)))
   #Return Data
-  return(tripsMatched)  
+  return(TRUE)  
 }

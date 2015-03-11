@@ -1,5 +1,5 @@
 #AXA Driver Telematics Analysis
-#Ver 0.9.5 # Updated score boosting with trajectories matching
+#Ver 0.9.6 # Updated code to include trip matching/boosting and tripMatchingFun integrated
 
 #Init-----------------------------------------------
 rm(list=ls(all=TRUE))
@@ -23,15 +23,11 @@ driversDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Dat
 otherDataDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/"
 outputDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Output"
 logsDirectory <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/Logs"
+tripMatchingDir <- "/home/wacax/Wacax/Kaggle/AXA-Driver-Telematics-Analysis/Data/TripMatches"
+
 vw77Dir = "/home/wacax/vowpal_wabbit-7.7/vowpalwabbit/"
 #h2o location
 h2o.jarLoc <- "/home/wacax/R/x86_64-pc-linux-gnu-library/3.1/h2o/java/h2o.jar"
-
-# workingDirectory <- "D:/Wacax/Driver-Telematics-Analysis"
-# setwd(workingDirectory)
-# driversDirectory <- "D:/Wacax/Driver-Telematics-Analysis/drivers"
-# outputDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Output"
-# logsDirectory <- "D:/Wacax/Driver-Telematics-Analysis/Logs"
 
 #List all possible drivers identities
 drivers <- list.files(driversDirectory)
@@ -620,9 +616,28 @@ if (SpotInstance == TRUE){
 #Concatenate lists into a data.frame
 driversPredictions <- as.data.frame(do.call(rbind, driversPredictions))
 
-#Run a trip matching algorithm
+#Trip Matching------------------
+#Interrupting Remote Instance (in case this is running on an AWS spot instance)
+SpotInstance <- TRUE
+if (SpotInstance == TRUE){
+  driversProcessed <- gsub(pattern = ".csv", replacement = "", x = list.files(tripMatchingDir))
+  drivers <- c(driversProcessed[length(driversProcessed)],
+               list.files(driversDirectory)[!(list.files(driversDirectory) %in% driversProcessed)])
+}
+
+#Run the trip matching algorithm
 matchedTripsAllDrivers <- sapply(drivers, TripMatchingFun)
 
+tripsMatchOutput <- list.files(tripMatchingDir)   
+matchingPredictions <- lapply(tripsMatchOutput, function(driver){
+  predictions <- fread(file.path(tripMatchingDir, driver), header = TRUE,
+                       stringsAsFactors = FALSE)
+  return(predictions)
+})
+#Concatenate prediction lists into a data.frame
+matchedTripsAllDrivers <- as.data.frame(do.call(rbind, matchingPredictions))
+
+#Prediction Boosting--------------
 #Boost Best Predictions
 bestBoostedPredictions <- driversPredictions[, 3]
 bestPredictionsIdxs <- which(driversPredictions[matchedTripsAllDrivers, 3] > 0.8)
@@ -637,18 +652,18 @@ submissionTemplate <- fread(file.path(otherDataDirectory, "sampleSubmission.csv"
 
 #LOF Anomaly Score
 submissionTemplate$prob <- signif(driversPredictions[, 1], digits = 8)
-write.csv(submissionTemplate, file = "lofScoreIII.csv", row.names = FALSE)
-system('zip lofScoreIII.zip lofScoreIII.csv')
+write.csv(submissionTemplate, file = "lofScoreIV.csv", row.names = FALSE)
+system('zip lofScoreIV.zip lofScoreIV.csv')
 
 #LOF Anomaly Rank
 submissionTemplate$prob <- signif(driversPredictions[, 2], digits = 8)
-write.csv(submissionTemplate, file = "lofRankIII.csv", row.names = FALSE)
-system('zip lofRankIII.zip lofRankIII.csv')
+write.csv(submissionTemplate, file = "lofRankIV.csv", row.names = FALSE)
+system('zip lofRankIV.zip lofRankIV.csv')
 
 #Probabilities h2o.ai RF
 submissionTemplate$prob <- signif(driversPredictions[, 3], digits = 8)
-write.csv(submissionTemplate, file = "RFProbIII.csv", row.names = FALSE)
-system('zip RFProbIII.zip RFProbIII.csv')
+write.csv(submissionTemplate, file = "RFProbIV.csv", row.names = FALSE)
+system('zip RFProbIV.zip RFProbIV.csv')
 
 #Probabilities h2o.ai GBM
 #submissionTemplate$prob <- signif(driversPredictions[, 4], digits = 8)
@@ -657,6 +672,6 @@ system('zip RFProbIII.zip RFProbIII.csv')
 
 #Probabilities h2o.ai RF + boosted predictions with trajectory matching
 submissionTemplate$prob <- signif(bestBoostedPredictions, digits = 8)
-write.csv(submissionTemplate, file = "RFProbBoostIII.csv", row.names = FALSE)
-system('zip RFProbBoostIII.zip RFProbBoostIII.csv')
+write.csv(submissionTemplate, file = "RFProbBoostIV.csv", row.names = FALSE)
+system('zip RFProbBoostIV.zip RFProbBoostIV.csv')
 
